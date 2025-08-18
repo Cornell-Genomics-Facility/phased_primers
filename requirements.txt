@@ -1,5 +1,5 @@
 # requirements.txt
-gradio==4.*          # 4.x for Spaces
+gradio==5.*
 pandas
 matplotlib
 numpy

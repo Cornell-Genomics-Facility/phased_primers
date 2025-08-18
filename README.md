@@ -20,12 +20,48 @@ Generate **phased PCR primers** with balanced early–cycle nucleotide diversity
 
 | Feature | Description |
 |---------|-------------|
-| **Balanced phasing algorithm** | Iteratively chooses the least-represented base for each added position, respecting degenerate IUPAC codes. |
+| **Chemistry-aware balanced phasing algorithm** | Iteratively chooses the least-represented base for each added position, respecting degenerate IUPAC codes. |
 | **Chemistry-aware color plots** | Visualise percent contribution to each color channel for: 1) Four-channel (HiSeq/MiSeq), 2) Two-channel original SBS, 3) Two-channel **XLEAP-SBS**, 4) One-channel (iSeq 100). |
 | **Nucleotide composition plot** | Side-by-side bar chart of %A, %T, %C, %G for positions 1–12. |
-| **Downloadables** | • `nucleotide_percentages_plot.png`  • `color_percentages_plot.png`  • `primers.csv` (adapter + phasing + gene-specific) |
-| **Versioned UI** | Version string in the header (`VERSION` constant). |
+| **Downloadables** | • `nucleotide_percentages_plot.png`  • `color_percentages_plot.png`  • `phased_primers.csv` (adapter + phasing + gene-specific) |
 | **Multi-user public link** | Hosted on HF Spaces; each browser session is isolated. |
+
+---
+
+## Illumina Chemistry
+
+Illumina currently ships **four distinct sequencing-by-synthesis (SBS) chemistries**:
+
+| Chemistry | Instruments | Color logic | Compatibility rule |
+|-----------|-------------|-------------|--------------------|
+| **Four-channel** | HiSeq, MiSeq | Red laser detects **A/C**, green laser detects **G/T** | Each cycle must contain **≥1 red** **and** **≥1 green** signal |
+| **Two-channel (original SBS)** | NovaSeq 6000 (S1–S4 flow cells), NextSeq 550, MiniSeq | **A/C = red**, **A/T = green**, **G = no color** | Each cycle must show **any color signal** (red/green) |
+| **Two-channel (XLEAP-SBS)** | NovaSeq X/X-Plus | **A/C = blue**, **T/C = green**, **G = no color** | Require “≥1 green pixel” rule; **indices starting with GG are incompatible** |
+| **One-channel** | iSeq 100 | Fluor mixing encoded in image intensity, not color | No color check; require **≥1 A or C or T** per cycle |
+
+> ℹ️  Always consult the latest Illumina documentation when designing index or primer pools for a specific platform.
+
+The app renders a **color-balance plot** for each chemistry so you can verify compatibility before ordering primers.
+
+---
+
+## Requirements
+
+Only needed if you clone the repository to run the app locally
+
+| Component | Tested version |
+|-----------|----------------|
+| **Python** | 3.9 – 3.12 |
+| **gradio** | 5.x |
+| **pandas** | 2.x |
+| **numpy** | 1.26+ |
+| **matplotlib** | 3.8+ |
+
+Install with:
+
+```bash
+pip install -r requirements.txt
+```
 
 ---
 
@@ -49,6 +85,8 @@ Generate **phased PCR primers** with balanced early–cycle nucleotide diversity
 └─ README.md            # (this file)
 ```
 
+---
+
 ## Credits 🙏
 Original concept & R/Shiny implementation:
 Franziska Bonath – https://github.com/FranBonath
@@ -56,7 +94,12 @@ Franziska Bonath – https://github.com/FranBonath
 Python/Gradio port & enhancements:
 Paul Munn, Genomics Innovation Hub, Cornell University
 
-## Updates
+---
 
-* Version 1.0.0: Initial commit (after conversion to Python / Gradio), and addition of color balancing plot
+## Update history:
+
+* Version 1.0.0: Initial commit (after conversion to Python / Gradio)
+* Version 1.1.0: Addition of color balancing plot
+* Version 1.2.0: Enable user to enter custom phased primers
+* Version 1.3.0: Modifications to phasing algorithm to make it chemistry-aware
 

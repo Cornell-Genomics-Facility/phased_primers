@@ -1,31 +1,42 @@
-#! /usr/bin/env python3
-
+#! /usr/bin/env python
 """
-This app generates phased PCR primers with balanced nucleotide complexity—that is, sequences with even representation of A, T, C, and G across positions. 
-This helps reduce issues like base-calling noise and phasing problems in sequencing platforms like Illumina.
-The app also includes a plot of the nucleotide balance by position of sequencing.
+Phased-primer designer with optional user-defined phased primer input and algorithmic color balancing
+
+Usage example:
+    python phased_primers_with_algorithmic_color_balancing_v1.py 
 
 Author: Paul Munn, Genomics Innovation Hub, Cornell University
-(based on a SHiny app written by Franziska Bonath: https://github.com/FranBonath/phased_primers_shiny/tree/main)
 
 Version history:
-- 07/28/2025: Original version
+    - 07/28/2025: Original version (1.0)
+    - 08/04/2025: Modified to add color balancing plot (1.1)
+    - 08/10/2025: Modified to enable user entered phased primers (1.2)
+    - 08/18/2025: Modified so that algorithm to choose nucleotieds favors color balancing over nucleotide diversity (1.3)
 """
 
 import gradio as gr
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import random, tempfile, os, uuid
+import random, tempfile, os
 import string
 
 # ───────── global variables ─────────
-VERSION = "1.0"          # bump when you release updates
+VERSION = "1.3"
 # ────────────────────────────────────
 
-
-# Defines IUPAC degenerate bases:
-# Used to interpret ambiguous bases during complexity evaluation
+# Map degenerate bases
+# R = A,G 
+# Y = C,T 
+# M = A,C 
+# K = G,T 
+# S = C, G
+# W = A,T 
+# H = A,C,T 
+# B = C,G,T 
+# V = A,C,G 
+# D = A,G,T 
+# N = A,C,G,T 
 def compile_library_of_special_nucs():
     return {
         "R": ["A", "G"], "Y": ["C", "T"], "S": ["G", "C"], "W": ["A", "T"],
@@ -33,12 +44,9 @@ def compile_library_of_special_nucs():
         "H": ["A", "C", "T"], "V": ["A", "C", "G"], "N": ["A", "C", "G", "T"]
     }
 
-# This step normalizes special bases into standard nucleotides so we can assess actual base balance
 def adjust_special_nucleotides(nuc_table):
-    """Convert degenerate bases into fractional A/T/C/G counts."""
     special = compile_library_of_special_nucs()
     if nuc_table.shape[1] > 4:
-        # Convert to float to avoid dtype clashes when adding fractions
         std = nuc_table.iloc[0, :4].astype(float).copy()
         for col in nuc_table.columns[4:]:
             if col in special:
@@ -46,8 +54,13 @@ def adjust_special_nucleotides(nuc_table):
                 for nuc in special[col]:
                     std[nuc] += cnt / len(special[col])
         return pd.DataFrame([std])
-    # If only A/T/C/G in table, still make sure they're floats
     return nuc_table.iloc[:, :4].astype(float)
+
+def build_custom_phased_list(primer: str, custom_seq: str):
+    s = (custom_seq or "").strip().upper().replace(" ", "")
+    L = len(s)
+    # ["", s[-1:], s[-2:], ..., s[-L:]]
+    return [list(s[L-k:] + primer) for k in range(0, L+1)]
 
 # This is the core algorithm for creating phased primers with maximum nucleotide diversity at early positions
 # Primer complexity is engineered and evaluated through:
@@ -72,9 +85,58 @@ def adjust_special_nucleotides(nuc_table):
 #    - Add it to the beginning of appropriate phased copies.
 # 4) Result: a list of staggered primers (with added nucleotides up front) that differ only by a few bases, 
 #    but introduce complexity early in the read.
-def phase_primer(primer, phasing):
+def phase_primer(primer, phasing, chemistry):
+    """
+    Same algorithm as before, but when a final random choice is needed among equally good bases:
+      1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|
+      2) Two-channels (original SBS):   prefer A/C/T
+      3) Two-channels (XLEAP-SBS):      prefer C/T
+      4) One-channel (iSeq 100):        prefer A/C/T
+    """
     if phasing == 0:
         return [list(primer)]
+
+    def prioritized_choice(cands, subset, counts_series, chem):
+        # First keep the existing behavior: prefer candidates present in the current subset
+        sub_cands = [c for c in cands if c in subset]
+        base_pool = sub_cands if sub_cands else cands
+
+        if chem == "Four-channels (HiSeq & MiSeq)":
+            # Choose the candidate that best balances A+C vs G+T if added now
+            A = float(counts_series.get("A", 0.0))
+            C = float(counts_series.get("C", 0.0))
+            G = float(counts_series.get("G", 0.0))
+            T = float(counts_series.get("T", 0.0))
+            def imbalance(b):
+                A2, C2, G2, T2 = A, C, G, T
+                if b == "A": A2 += 1.0
+                elif b == "C": C2 += 1.0
+                elif b == "G": G2 += 1.0
+                elif b == "T": T2 += 1.0
+                return abs((A2 + C2) - (G2 + T2))
+            imbalances = [(b, imbalance(b)) for b in base_pool]
+            min_val = min(v for _, v in imbalances)
+            best = [b for b, v in imbalances if v == min_val]
+            return random.choice(best)
+
+        elif chem == "Two-channels (original SBS)":
+            pref = {"A", "C", "T"}  # prefer signal channels; G is no-color
+            preferred = [b for b in base_pool if b in pref]
+            return random.choice(preferred if preferred else base_pool)
+
+        elif chem == "Two-channels (XLEAP-SBS)":
+            pref = {"C", "T"}       # C/T are colored; A is blue, G dark but spec asks C/T priority
+            preferred = [b for b in base_pool if b in pref]
+            return random.choice(preferred if preferred else base_pool)
+
+        elif chem == "One-channel (iSeq 100)":
+            pref = {"A", "C", "T"}  # signal vs G (dark)
+            preferred = [b for b in base_pool if b in pref]
+            return random.choice(preferred if preferred else base_pool)
+
+        # Fallback (unknown chemistry)
+        return random.choice(base_pool)
+
     split = list(primer)
     phased = [split.copy() for _ in range(phasing + 1)]
     added = []
@@ -86,23 +148,50 @@ def phase_primer(primer, phasing):
         counts = pd.Series(combined).value_counts()
         all_nucs = ["A", "T", "C", "G"] + list(special.keys())
         data = {n: counts.get(n, 0) for n in all_nucs}
+        df = adjust_special_nucleotides(pd.DataFrame([data]))  # → columns A/T/C/G with fractional adds
+        # choose among least represented standard bases
+        min_val = df.min(axis=1).values[0]
+        choices = df.columns[df.iloc[0] == min_val].tolist()   # subset of {"A","T","C","G"}
 
+        # If multiple candidates remain, use chemistry-aware priority instead of pure random
+        if len(choices) == 1:
+            chosen = choices[0]
+        else:
+            chosen = prioritized_choice(choices, subset, df.iloc[0], chemistry)
+
+        added = [chosen] + added
+        for i in range(phasing - phase_cnt + 1, phasing + 1):
+            phased[i] = [chosen] + phased[i]
+
+    return phased
+
+def phase_primer_old(primer, phasing):
+    if phasing == 0:
+        return [list(primer)]
+    split = list(primer)
+    phased = [split.copy() for _ in range(phasing + 1)]
+    added = []
+    special = compile_library_of_special_nucs()
+    for phase_cnt in range(phasing, 0, -1):
+        subset = split[:phase_cnt]
+        combined = added + subset
+        counts = pd.Series(combined).value_counts()
+        all_nucs = ["A", "T", "C", "G"] + list(special.keys())
+        data = {n: counts.get(n, 0) for n in all_nucs}
         df = adjust_special_nucleotides(pd.DataFrame([data]))
         min_val = df.min(axis=1).values[0]
         choices = df.columns[df.iloc[0] == min_val].tolist()
         choices_in_subset = [c for c in choices if c in subset]
         chosen = random.choice(choices_in_subset or choices)
-
         added = [chosen] + added
         for i in range(phasing - phase_cnt + 1, phasing + 1):
             phased[i] = [chosen] + phased[i]
     return phased
 
-# Combines each phased primer with the adapter, and names them 
 def design_primers(phased, adapter, raw):
     rows = []
     for i, p in enumerate(phased):
-        phase_len = len(p) - len(raw)
+        phase_len = max(0, len(p) - len(raw))
         phasing = ''.join(p[:phase_len])
         gene = ''.join(p[phase_len:])
         full = adapter + phasing + gene
@@ -116,93 +205,205 @@ def design_primers(phased, adapter, raw):
     return pd.DataFrame(rows)
 
 def plot_nuc(primer_list):
-    max_len = 12
-    mat = np.array([p[:max_len] for p in primer_list if len(p) >= max_len])
-    nucs = ["A", "T", "C", "G"]
-    pos = mat.shape[1]
-    counts = {n: [(col == n).sum() for col in mat.T] for n in nucs}
+    # Use the shortest primer length so every position has data across all primers
+    if not primer_list:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.text(0.5, 0.5, "No primers to plot.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+    L = min(len(p) for p in primer_list)
+    if L == 0:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.text(0.5, 0.5, "Primers have zero length.", ha="center", va="center")
+        ax.axis("off")
+        return fig
 
+    rows = [[ch.upper() for ch in p[:L]] for p in primer_list]
+    mat = np.array(rows)
+    total = mat.shape[0]
+
+    # Targets and colors
+    nucs   = ["A", "C", "T", "G"]
+    colors = {"A": "green", "C": "blue", "T": "red", "G": "orange"}
+
+    # Degenerate-to-standard translation
+    special = compile_library_of_special_nucs()
+
+    # Floating counts for fractional contributions from degenerate bases
+    counts = {n: np.zeros(L, dtype=float) for n in nucs}
+
+    for j in range(L):
+        col = mat[:, j]
+        for b in col:
+            if b in nucs:
+                counts[b][j] += 1.0
+            elif b in special:  # split among mapped bases
+                mapped = special[b]
+                frac = 1.0 / len(mapped)
+                for m in mapped:
+                    counts[m][j] += frac
+            else:
+                pass  # unknown character → ignore
+
+    # ── Wider spacing between groups: shrink group width and center bars at integer x ──
     fig, ax = plt.subplots(figsize=(10, 5))
-    width, x = 0.2, np.arange(pos)
+    x = np.arange(L)
+    group_width = 0.55                     # fraction of available space per group (shrink to widen gaps)
+    width = group_width / len(nucs)        # bar width within a group
+    offsets = (np.arange(len(nucs)) - (len(nucs)-1)/2) * width  # center bars around each x
+
     for i, n in enumerate(nucs):
-        vals = np.array(counts[n]) / len(primer_list) * 100
-        ax.bar(x + i * width, vals, width, label=n)
+        vals = (counts[n] / total) * 100.0
+        ax.bar(x + offsets[i], vals, width=width, label=n, color=colors[n])
+
     ax.set(
         xlabel="Base position from 5′ end (after phasing)",
         ylabel="Nucleotide frequency (%)",
         title="Nucleotide Composition by Position Across Phased Primers",
-        ylim=(0, 100)
+        ylim=(0, 100),
+        xlim=(-0.5, L - 0.5)               # keep first/last groups fully visible
     )
-    ax.set_xticks(x + width * 1.5)
-    ax.set_xticklabels([str(i+1) for i in range(pos)])
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(i + 1) for i in range(L)])
     ax.legend(title="Nucleotide", bbox_to_anchor=(1.02, 1), loc="upper left")
     plt.tight_layout()
     return fig
 
-def get_color_map(chem):
-    maps = {
-        "Four-channels (HiSeq & MiSeq)" : {"red":["A","T"], "green":["G","T"]},
-        "Two-channels (original SBS)"   : {"orange":["A"], "red":["C"], "green":["T"], "none":["G"]},
-        "Two-channels (XLEAP-SBS)"      : {"blue":["A"], "cyan":["C"], "green":["T"], "none":["G"]},
-        "One-channel (iSeq 100)"        : {"green":["A"], "red":["C"], "orange":["T"], "none":["G"]}
-    }
-    return maps[chem]
+# def get_color_map(chem):
+#     maps = {
+#         "Four-channels (HiSeq & MiSeq)" : {"red":["A","C"], "green":["G","T"], "black":["H","R","B","S","W","D","N","K","Y","M","V"]},
+#         "Two-channels (original SBS)"   : {"orange":["A"], "red":["C"], "green":["T"], "none":["G"]},
+#         "Two-channels (XLEAP-SBS)"      : {"blue":["A"], "cyan":["C"], "green":["T"], "none":["G"]},
+#         "One-channel (iSeq 100)"        : {"green":["A"], "red":["C"], "orange":["T"], "none":["G"]},
+#     }
+#     return maps[chem]
+
+def get_color_spec(chem):
+    """
+    Returns a list of groups: (legend_label, bar_color, bases_set)
+    Note: No 'Deg' group. Degenerate bases are split fractionally among A/C/G/T
+    and then aggregated into these groups.
+    """
+    if chem == "Four-channels (HiSeq & MiSeq)":
+        # Two bars: A/C (red) and G/T (green)
+        return [
+            ("A / C", "red",   {"A", "C"}),
+            ("G / T", "green", {"G", "T"}),
+        ]
+    elif chem == "Two-channels (original SBS)":
+        return [
+            ("A", "orange",   {"A"}),
+            ("C", "red",      {"C"}),
+            ("T", "green",    {"T"}),
+            ("G", "gray",     {"G"}),
+        ]
+    elif chem == "Two-channels (XLEAP-SBS)":
+        return [
+            ("A", "blue",     {"A"}),
+            ("C", "cyan",     {"C"}),
+            ("T", "green",    {"T"}),
+            ("G", "gray",     {"G"}),
+        ]
+    else:  # "One-channel (iSeq 100)"
+        return [
+            ("A", "green",    {"A"}),
+            ("C", "blue",     {"C"}),
+            ("T", "red",      {"T"}),
+            ("G", "gray",     {"G"}),
+        ]
 
 def plot_colors(primer_list, chemistry):
-    max_len = 12
-    mat = np.array([p[:max_len] for p in primer_list if len(p) >= max_len])
-    pos = mat.shape[1]
+    # Use the shortest length so every position has data across all primers
+    if not primer_list:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.text(0.5, 0.5, "No primers to plot.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+    L = min(len(p) for p in primer_list)
+    if L == 0:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.text(0.5, 0.5, "Primers have zero length.", ha="center", va="center")
+        ax.axis("off")
+        return fig
 
-    cmap = get_color_map(chemistry)
+    rows = [[ch.upper() for ch in p[:L]] for p in primer_list]
+    mat = np.array(rows)
+    total = mat.shape[0]
 
-    # guarantee a bucket for "none" even if the chemistry dict doesn't include it
-    if "none" not in cmap:
-        cmap["none"] = []
+    # Fractional translation of degenerate bases → A/C/G/T
+    special = compile_library_of_special_nucs()
+    bases = ["A", "C", "G", "T"]
+    base_counts = {b: np.zeros(L, dtype=float) for b in bases}
 
-    # base→color lookup
-    base_to_color = {b: c for c, bases in cmap.items() for b in bases}
+    for j in range(L):
+        col = mat[:, j]
+        for b in col:
+            if b in base_counts:
+                base_counts[b][j] += 1.0
+            elif b in special:
+                mapped = special[b]
+                frac = 1.0 / len(mapped)
+                for m in mapped:
+                    if m in base_counts:
+                        base_counts[m][j] += frac
+            else:
+                pass  # unknown → ignore
 
-    colors = list(cmap.keys())
-    counts = {c: [0] * pos for c in colors}
+    # Build plotting groups per chemistry
+    groups = []
+    if chemistry == "Two-channels (XLEAP-SBS)":
+        # C contributes to BOTH A and T channels; remove separate C bar
+        groups = [
+            ("A / C", "blue",  base_counts["A"] + base_counts["C"]),
+            ("T / C", "green", base_counts["T"] + base_counts["C"]),
+            ("G",     "gray",  base_counts["G"]),
+        ]
+    elif chemistry == "Two-channels (original SBS)":
+        # A contributes to BOTH C and T channels; remove separate A bar
+        groups = [
+            ("A / C", "red",   base_counts["A"] + base_counts["C"]),
+            ("A / T", "green", base_counts["A"] + base_counts["T"]),
+            ("G",     "gray",  base_counts["G"]),
+        ]
+    else:
+        # Other chemistries from spec (no duplication)
+        spec = get_color_spec(chemistry)  # list of (label, color, set_of_bases)
+        for lab, color, bset in spec:
+            arr = np.zeros(L, dtype=float)
+            for b in bset:
+                arr += base_counts[b]
+            groups.append((lab, color, arr))
 
-    for i in range(pos):
-        for b in mat[:, i]:
-            counts[base_to_color.get(b, "none")][i] += 1
-
+    # Plot with wider spacing between groups
     fig, ax = plt.subplots(figsize=(10, 5))
-    width, x = 0.8 / len(colors), np.arange(pos)
+    G = len(groups)
+    x = np.arange(L)
+    group_width = 0.55                   # shrink per-position cluster to widen gaps
+    width = group_width / G
+    offsets = (np.arange(G) - (G - 1) / 2) * width
 
-    for idx, c in enumerate(colors):
-        vals = np.array(counts[c]) / len(primer_list) * 100
-        ax.bar(
-            x + idx * width,
-            vals,
-            width=width,
-            label=c,
-            color=c if c != "none" else "gray"
-        )
+    # Allow y-axis to exceed 100% if a channel duplicates contributions (XLEAP/original SBS)
+    max_pct = 0.0
+    for i, (lab, color, arr) in enumerate(groups):
+        vals = (arr / total) * 100.0
+        max_pct = max(max_pct, float(np.max(vals)) if vals.size else 0.0)
+        ax.bar(x + offsets[i], vals, width=width, label=lab, color=color)
 
     ax.set(
         xlabel="Base position from 5′ end (after phasing)",
         ylabel="Fluorescent signal representation (%)",
         title=f"Color Channel Composition by Position\n({chemistry})",
-        ylim=(0, 100),
+        xlim=(-0.5, L - 0.5),
+        ylim=(0, max(100, max_pct * 1.05) if max_pct > 0 else 100),
     )
-    ax.set_xticks(x + width * (len(colors) / 2))
-    ax.set_xticklabels([str(i + 1) for i in range(pos)])
-    ax.legend(title="Color", bbox_to_anchor=(1.02, 1), loc="upper left")
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(i + 1) for i in range(L)])
+    ax.legend(title="Nucleotides", bbox_to_anchor=(1.02, 1), loc="upper left")
     plt.tight_layout()
-
     return fig
 
-# ----------  util: save fig / df to temp files ----------
-# This is a utility function to save a figure to a temporary file
-# and return the path to the file.
-# It uses the tempfile module to get a temporary directory and a unique file name.
-# It then saves the figure to the file and closes it.
-# Finally, it returns the path to the file.
 def _tmp_path(filename: str) -> str:
-    tmp_dir = tempfile.mkdtemp()           # unique dir per run
+    tmp_dir = tempfile.mkdtemp()
     return os.path.join(tmp_dir, filename)
 
 def save_fig_fixed(fig, filename: str) -> str:
@@ -216,21 +417,66 @@ def save_csv_fixed(df, filename: str) -> str:
     df.to_csv(path, index=False)
     return path
 
-# ----------  main gradio function ----------
-def run_tool(phasing, primer, adapter, chemistry):
-    primers   = phase_primer(primer, phasing)
-    df        = design_primers(primers, adapter, primer)
+# ---------- custom-primer helpers ----------
+ALLOWED = set("ACTG")
 
+# def validate_custom_seq(seq: str) -> str:
+#    seq = (seq or "").strip().upper().replace(" ", "")
+#    if not seq:
+#        raise gr.Error("Please enter at least one base (A/C/T/G).")
+#    if any(ch not in ALLOWED for ch in seq):
+#        raise gr.Error("Invalid characters: only A, C, T, G are allowed (case-insensitive).")
+#    return seq
+
+def _status_html(status: str) -> str:
+    if not status:
+        return ""
+    color = "#b00020" if status.startswith("❌") else "#1b7e1b"
+    return f"<div style='color:{color};font-size:0.9em;white-space:pre-wrap;'>{status}</div>"
+
+def build_custom_phased_list(primer: str, custom_seq: str):
+    s = (custom_seq or "").strip().upper().replace(" ", "")
+    L = len(s)
+    # ["", s[-1:], s[-2:], ..., s[-L:]]
+    return [list(s[L-k:] + primer) for k in range(0, L+1)]
+
+# ---------- main function ----------
+def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
+    phasing = int(phasing)
+    status = ""
+    primer = primer.upper()
+
+    if custom_mode == "On":
+        seq = (custom_seq or "").strip().upper().replace(" ", "")
+        invalid = sorted({ch for ch in seq if ch not in {"A","C","T","G"}})
+        if invalid:
+            status = f"❌ Invalid character(s): {', '.join(invalid)}. Use only A, C, T, G."
+            return None, None, pd.DataFrame(), None, None, None, _status_html(status)
+        if len(seq) != phasing:
+            status = f"❌ Length mismatch: entered {len(seq)} base(s) but slider is {phasing}."
+            return None, None, pd.DataFrame(), None, None, None, _status_html(status)
+
+        primers = build_custom_phased_list(primer, seq)
+        status = f"✅ Using custom phased bases “{seq}”. Generated {len(primers)} primers."
+    else:
+        primers = phase_primer(primer, phasing, chemistry)
+        status = f"✅ Using algorithmic phasing (phasing = {phasing}). Generated {len(primers)} primers."
+
+    df        = design_primers(primers, adapter, primer)
     fig_nuc   = plot_nuc(primers)
     fig_color = plot_colors(primers, chemistry)
 
-    # fixed names for downloads
-    nuc_png   = save_fig_fixed(fig_nuc,   "nucleotide_percentages_plot.png")
-    clr_png   = save_fig_fixed(fig_color, "color_percentages_plot.png")
-    csv_path  = save_csv_fixed(df,        "primers.csv")
+    return (
+        fig_nuc,
+        fig_color,
+        df,
+        save_fig_fixed(fig_nuc,   "nucleotide_percentages_plot.png"),
+        save_fig_fixed(fig_color, "color_percentages_plot.png"),
+        save_csv_fixed(df,        "phased_primers.csv"),
+        _status_html(status),
+    )
 
-    return fig_nuc, fig_color, df, nuc_png, clr_png, csv_path
-
+# ---------- UI ----------
 chemistries = [
     "Four-channels (HiSeq & MiSeq)",
     "Two-channels (original SBS)",
@@ -238,10 +484,78 @@ chemistries = [
     "One-channel (iSeq 100)",
 ]
 
+def _resolve_adapter(adapter_choice: str, custom_value: str):
+    """
+    Validate adapter input.
+    - If 'Other (user entry)' is selected, allow ONLY A/C/T/G (case-insensitive).
+    - Convert to UPPERCASE when passing through.
+    - On invalid input, return (None, <error_html>) so the UI shows an inline error.
+    """
+    if adapter_choice.startswith("Other"):
+        # remove all whitespace and uppercase
+        seq = ''.join((custom_value or "").split()).upper()
+        if not seq:
+            return None, "<div style='color:#b00020'>❌ Enter a custom adapter sequence.</div>"
+        invalid = sorted({ch for ch in seq if ch not in {"A", "C", "T", "G"}})
+        if invalid:
+            bad = ", ".join(invalid)
+            return None, (
+                f"<div style='color:#b00020'>❌ Invalid character(s) in custom adapter: {bad}. "
+                f"Use only A, C, T, G (case-insensitive).</div>"
+            )
+        return seq, ""
+
+    # preset: take everything before the first space as the adapter sequence
+    seq = adapter_choice.split(" ")[0].strip().upper()
+    return seq, ""
+
+def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemistry, custom_mode, custom_seq):
+    adapter_seq, msg = _resolve_adapter(adapter_choice, custom_adapter)
+    if adapter_seq is None:  # show error inline and clear outputs
+        return None, None, pd.DataFrame(), None, None, None, msg
+    # delegate to your existing run_tool (expects the raw adapter string)
+    return run_tool(phasing, primer, adapter_seq, chemistry, custom_mode, custom_seq)
+
 with gr.Blocks(css="""
-  .input-panel {background:#f3f3f3;padding:16px;border-radius:8px;}
+  /* Inputs panel (light mode) */
+  .input-panel { background:#f3f3f3; padding:16px; border-radius:8px; }
+  /* Inputs panel (dark mode overrides) */
+  html.dark .input-panel, body.dark .input-panel, [data-theme*="dark"] .input-panel {
+    background:#2b2b2b !important; color:inherit; border:1px solid rgba(255,255,255,0.08);
+  }
+  .inline-row { align-items:center; gap:12px; }
+
+  /* Ticks that adapt to theme */
+  .tick-grid {
+    display:grid;
+    grid-template-columns:repeat(22,1fr);
+    column-gap:35px;
+    font-size:11px;
+    padding:0 0 8px 0;
+    margin-left:20px;
+    justify-items:start;
+    user-select:none;
+    color:inherit;
+  }
+  .tick-grid > span { justify-self:start; }
+  @media (prefers-color-scheme: dark)  { .tick-grid { color: rgba(255,255,255,.9); } }
+  @media (prefers-color-scheme: light) { .tick-grid { color: #444; } }
+
+  /* give the radio extra width */
+  #custom-mode { min-width: 160px; }
+               
+  /* Download buttons styling */
+  .downloads-row .gr-button { 
+    padding: 10px 16px; 
+    border-radius: 8px; 
+    font-weight: 600; 
+  }
+  .downloads-row { gap: 12px; }
+
 """) as demo:
-    
+
+    demo.queue()
+
     gr.Markdown(
         f"""
         <h2 style="margin-bottom:0.2em;">
@@ -251,52 +565,116 @@ with gr.Blocks(css="""
             </span>
         </h2>
         <p style="font-size: 0.9em; margin-top: 0.5em;">
-            This app generates phased PCR primers with balanced nucleotide complexity — that is, sequences with even representation of A, T, C, and G across positions. 
+            Generate phased PCR primers with balanced early-cycle nucleotide diversity.
         </p>
         """
     )
 
-    # ───── inputs on light‑gray panel ─────
     with gr.Column(elem_classes="input-panel"):
-        phasing_slider = gr.Slider(
-            minimum=0, maximum=21, value=0, step=1,
-            label="Amount of primer phasing (integer)"
-        )
+        # slider + tick grid
+        phasing_slider = gr.Slider(minimum=0, maximum=21, value=0, step=1,
+                                   label="Amount of primer phasing (integer)")
         ticks = ''.join(f'<span>{i}</span>' for i in range(22))
-        gr.HTML(
-            f'<div style="display:flex;justify-content:space-between;'
-            f'font-size:11px;padding:0 4px 8px 4px;">{ticks}</div>'
-        )
-        primer_in  = gr.Textbox("CCTAHGGGRBGCAGCAG",
-                                label="Gene‑specific primer (5′→3′)")
-        adapter_in = gr.Textbox("ACACTCTTTCCCTACACGACGCTCTTCCGATCT",
-                                label="Adapter sequence (5′→3′)")
-        chem_in    = gr.Dropdown(
-            ["Four-channels (HiSeq & MiSeq)",
-             "Two-channels (original SBS)",
-             "Two-channels (XLEAP-SBS)",
-             "One-channel (iSeq 100)"],
-            value="Four-channels (HiSeq & MiSeq)",
-            label="Sequencing chemistry"
-        )
-        run_btn = gr.Button("Generate Primers")
+        gr.HTML(f"<div class='tick-grid'>{ticks}</div>")
 
-    # ───── outputs: plots side‑by‑side, then table & downloads ─────
-    with gr.Row():
-        nuc_plot  = gr.Plot(label="Nucleotide Composition by Position")
-        clr_plot  = gr.Plot(label="Color Channel Composition by Position")
+        # ROW 1: Adapter dropdown + Custom adapter textbox + Primer textbox
+        with gr.Row(elem_classes="inline-row"):
+            adapter_dd = gr.Dropdown(
+                choices=[
+                    "ACACTCTTTCCCTACACGACGCTCTTCCGATCT (TruSeq-P5 Forward)",
+                    "GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT (TruSeq-P7 Reverse)",
+                    "TCGTCGGCAGCGTCAGATGTGTATAAGAGACAG (Nextera-P5 Forward)",
+                    "GTCTCGTGGGCTCGGAGATGTGTATAAGAGACAG (Nextera-P7 Reverse)",
+                    "Other (user entry)",
+                ],
+                value="ACACTCTTTCCCTACACGACGCTCTTCCGATCT (TruSeq-P5 Forward)",
+                label="Adapter",
+                scale=1
+            )
+            adapter_custom = gr.Textbox(
+                value="",
+                label="Custom adapter (enabled if 'Other')",
+                placeholder="Enter custom adapter sequence",
+                interactive=False,
+                scale=1
+            )
+            primer_in  = gr.Textbox(
+                "CCTAHGGGRBGCAGCAG",
+                label="Gene-specific primer (5′→3′)",
+                placeholder="e.g. CCTAHGGGRBGCAGCAG",
+                scale=1
+            )
+
+        # Enable/disable custom adapter box based on dropdown
+        def _toggle_adapter(choice):
+            if choice.startswith("Other"):
+                return gr.update(interactive=True)
+            else:
+                return gr.update(value="", interactive=False)
+        adapter_dd.change(_toggle_adapter, inputs=adapter_dd, outputs=adapter_custom)
+
+        # ROW 2: Sequencing chemistry + Radio + Custom phased-bases + inline status
+        with gr.Row(elem_classes="inline-row"):
+            chem_in = gr.Dropdown(
+                ["Four-channels (HiSeq & MiSeq)",
+                 "Two-channels (original SBS)",
+                 "Two-channels (XLEAP-SBS)",
+                 "One-channel (iSeq 100)"],
+                value="Four-channels (HiSeq & MiSeq)",
+                label="Sequencing chemistry",
+                scale=1
+            )
+
+            custom_mode = gr.Radio(
+                choices=["Off", "On"],
+                value="Off",
+                label="Enter your own phased primer",
+                scale=1,
+                elem_id="custom-mode"
+            )
+
+            custom_seq = gr.Textbox(
+                value="",
+                label="Custom phasing bases (A/C/T/G only)",
+                placeholder="e.g. GTC",
+                interactive=False,
+                scale=1
+            )
+
+            with gr.Column(scale=1):
+                status_inline = gr.HTML("")  # error/success message
+
+        # toggle handler: enable/disable + clear text & status when Off
+        def _toggle(mode):
+            if mode == "On":
+                return gr.update(interactive=True), gr.update(value="")
+            else:
+                return gr.update(value="", interactive=False), gr.update(value="")
+        custom_mode.change(_toggle, inputs=custom_mode, outputs=[custom_seq, status_inline])
+
+        run_btn = gr.Button("Generate Phased Primers", variant="primary")
+
+    # outputs
+    nuc_plot  = gr.Plot(label="Nucleotide Composition by Position")
+    clr_plot  = gr.Plot(label="Color Channel Composition by Position")
+    gr.Markdown("<hr style='opacity:.2;'>")
     table_out = gr.Dataframe(label="Generated Primers")
-    file_nuc  = gr.File(label="Download nucleotide_percentages_plot.png")
-    file_clr  = gr.File(label="Download color_percentages_plot.png")
-    file_csv  = gr.File(label="Download primers.csv")
 
+    with gr.Row(elem_classes="downloads-row"):
+        dl_nuc = gr.DownloadButton(label="Download nucleotide_percentages_plot.png", variant="primary")
+        dl_clr = gr.DownloadButton(label="Download color_percentages_plot.png", variant="primary")
+        dl_csv = gr.DownloadButton(label="Download primers.csv", variant="primary")
+
+    # file_nuc  = gr.File(label="Download nucleotide_percentages_plot.png")
+    # file_clr  = gr.File(label="Download color_percentages_plot.png")
+    # file_csv  = gr.File(label="Download primers.csv")
+
+    # use the wrapper that resolves the adapter to the bare sequence
     run_btn.click(
-        run_tool,
-        inputs=[phasing_slider, primer_in, adapter_in, chem_in],
-        outputs=[nuc_plot, clr_plot, table_out, file_nuc, file_clr, file_csv]
+        run_tool_with_adapter,
+        inputs=[phasing_slider, primer_in, adapter_dd, adapter_custom, chem_in, custom_mode, custom_seq],
+        outputs=[nuc_plot, clr_plot, table_out, dl_nuc, dl_clr, dl_csv, status_inline]
     )
 
 if __name__ == "__main__":
     demo.launch()
-    # demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
-
