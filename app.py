@@ -12,6 +12,7 @@ Version history:
     - 08/04/2025: Modified to add color balancing plot (1.1)
     - 08/10/2025: Modified to enable user entered phased primers (1.2)
     - 08/18/2025: Modified so that algorithm to choose nucleotieds favors color balancing over nucleotide diversity (1.3)
+    - 08/20/2025: Added rules to prevent 4-in-a-row bases (e.g. CCCC) and 5-in-a-row C/G mix (e.g. no CGCGC or CCCGG) (1.3.1)
 """
 
 import gradio as gr
@@ -22,7 +23,7 @@ import random, tempfile, os
 import string
 
 # ───────── global variables ─────────
-VERSION = "1.3"
+VERSION = "1.3.1"
 # ────────────────────────────────────
 
 # Map degenerate bases
@@ -86,6 +87,94 @@ def build_custom_phased_list(primer: str, custom_seq: str):
 # 4) Result: a list of staggered primers (with added nucleotides up front) that differ only by a few bases, 
 #    but introduce complexity early in the read.
 def phase_primer(primer, phasing, chemistry):
+    """
+    When a final random choice is needed among equally good bases:
+      1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|
+      2) Two-channels (original SBS):   prefer A/C/T; occasionally pick G.
+      3) Two-channels (XLEAP-SBS):      prefer C/T; pick A less often; occasionally G.
+        Additionally, forbid:
+          • 'C' appearing 4 times in a row in the phasing prefix (no "CCCC")
+          • any 5-long run consisting only of C/G (e.g., "CGCGC", "CCCGG", etc.)
+      4) One-channel (iSeq 100):        prefer A/C/T
+    """
+    if phasing == 0:
+        return [list(primer)]
+
+    def pick_with_weights(pool, weights_map):
+        """Weighted random from pool using weights_map (fallback uniform if missing)."""
+        try:
+            w = [weights_map.get(b, 1.0) for b in pool]
+            # guard against all zeros
+            if all(v <= 0 for v in w):
+                return random.choice(pool)
+            return random.choices(pool, weights=w, k=1)[0]
+        except Exception:
+            return random.choice(pool)
+
+    def violates_xleap_constraints(current_added, cand):
+        """
+        We add the candidate to the *front* of `added`, which forms the phasing prefix.
+        Only new runs that begin at the front can be created; deeper runs were validated earlier.
+        - No 'CCCC' at the front.
+        - No 5-long run of only C/G at the front.
+        """
+        # If adding C would create 'CCCC' at the front
+        if cand == "C" and len(current_added) >= 3 and all(x == "C" for x in current_added[:3]):
+            return True
+        # If adding C or G would create a 5-long run of only C/G at the front
+        if cand in {"C", "G"} and len(current_added) >= 4 and all(x in {"C", "G"} for x in current_added[:4]):
+            return True
+        return False
+
+    split = list(primer)
+    phased = [split.copy() for _ in range(phasing + 1)]
+    added = []
+    special = compile_library_of_special_nucs()
+
+    for phase_cnt in range(phasing, 0, -1):
+        subset = split[:phase_cnt]
+        combined = added + subset
+        counts = pd.Series(combined).value_counts()
+
+        all_nucs = ["A", "T", "C", "G"] + list(special.keys())
+        data = {n: counts.get(n, 0) for n in all_nucs}
+
+        df = adjust_special_nucleotides(pd.DataFrame([data]))  # columns A/T/C/G (floats)
+        min_val = df.min(axis=1).values[0]
+        choices = df.columns[df.iloc[0] == min_val].tolist()   # subset of {"A","T","C","G"}
+
+        # Prefer nucleotides that already appear in the current primer subset (original behavior)
+        sub_cands = [c for c in choices if c in subset]
+        base_pool = sub_cands if sub_cands else choices
+
+        # Chemistry-specific tie-breaking
+        if len(base_pool) == 1:
+            chosen = base_pool[0]
+        elif chemistry == "Two-channels (original SBS)":
+            # Prefer A/C/T, occasionally G
+            weights = {"A": 1.0, "C": 1.0, "T": 1.0, "G": 0.05}
+            chosen = pick_with_weights(base_pool, weights)
+
+        elif chemistry == "Two-channels (XLEAP-SBS)":
+            # Prefer C/T strongly; A less often; occasionally G
+            weights = {"C": 1.0, "T": 1.0, "A": 0.3, "G": 0.05}
+            # Enforce constraints by filtering illegal candidates first
+            legal_pool = [b for b in base_pool if not violates_xleap_constraints(added, b)]
+            pool = legal_pool if legal_pool else base_pool  # fallback if all illegal
+            chosen = pick_with_weights(pool, weights)
+
+        else:
+            # Other chemistries: unchanged behavior (uniform random among base_pool)
+            chosen = random.choice(base_pool)
+
+        # Record and prepend into phased copies (same as original)
+        added = [chosen] + added
+        for i in range(phasing - phase_cnt + 1, phasing + 1):
+            phased[i] = [chosen] + phased[i]
+
+    return phased
+
+def phase_primer_old(primer, phasing, chemistry):
     """
     Same algorithm as before, but when a final random choice is needed among equally good bases:
       1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|
@@ -163,29 +252,6 @@ def phase_primer(primer, phasing, chemistry):
         for i in range(phasing - phase_cnt + 1, phasing + 1):
             phased[i] = [chosen] + phased[i]
 
-    return phased
-
-def phase_primer_old(primer, phasing):
-    if phasing == 0:
-        return [list(primer)]
-    split = list(primer)
-    phased = [split.copy() for _ in range(phasing + 1)]
-    added = []
-    special = compile_library_of_special_nucs()
-    for phase_cnt in range(phasing, 0, -1):
-        subset = split[:phase_cnt]
-        combined = added + subset
-        counts = pd.Series(combined).value_counts()
-        all_nucs = ["A", "T", "C", "G"] + list(special.keys())
-        data = {n: counts.get(n, 0) for n in all_nucs}
-        df = adjust_special_nucleotides(pd.DataFrame([data]))
-        min_val = df.min(axis=1).values[0]
-        choices = df.columns[df.iloc[0] == min_val].tolist()
-        choices_in_subset = [c for c in choices if c in subset]
-        chosen = random.choice(choices_in_subset or choices)
-        added = [chosen] + added
-        for i in range(phasing - phase_cnt + 1, phasing + 1):
-            phased[i] = [chosen] + phased[i]
     return phased
 
 def design_primers(phased, adapter, raw):
@@ -440,6 +506,70 @@ def build_custom_phased_list(primer: str, custom_seq: str):
     # ["", s[-1:], s[-2:], ..., s[-L:]]
     return [list(s[L-k:] + primer) for k in range(0, L+1)]
 
+def _cg_violation_html(seq: str) -> str:
+    """Return an HTML error if 'CCCC' or any 5-long C/G-only run exists; else empty string."""
+    s = (seq or "").upper()
+    if ("AAAA" in s) or ("CCCC" in s) or ("TTTT" in s) or ("GGGG" in s):
+        return "<div style='color:#b00020'>❌ Bases cannot appear four times in a row (e.g., no “CCCC”).</div>"
+    for i in range(len(s) - 4):
+        if all(ch in {"C", "G"} for ch in s[i:i+5]):
+            return "<div style='color:#b00020'>❌ No 5-base runs composed only of C/G (e.g., “CGCGC”, “CCCGG”).</div>"
+    return ""
+
+def _resolve_adapter(adapter_choice: str, custom_value: str):
+    """
+    Validate adapter input:
+    - If 'Other (user entry)' is selected, allow ONLY A/C/T/G (case-insensitive).
+    - Enforce no 'CCCC' and no 5-long C/G-only runs.
+    - Convert to UPPERCASE on success.
+    """
+    if adapter_choice.startswith("Other"):
+        seq = ''.join((custom_value or "").split()).upper()
+        if not seq:
+            return None, "<div style='color:#b00020'>❌ Enter a custom adapter sequence.</div>"
+        invalid = sorted({ch for ch in seq if ch not in {"A", "C", "T", "G"}})
+        if invalid:
+            bad = ", ".join(invalid)
+            return None, f"<div style='color:#b00020'>❌ Invalid character(s): {bad}. Use only A, C, T, G.</div>"
+        v = _cg_violation_html(seq)
+        if v:
+            return None, v
+        return seq, ""
+    # preset: take everything before first space; still enforce constraints
+    seq = adapter_choice.split(" ")[0].strip().upper()
+    v = _cg_violation_html(seq)
+    if v:
+        return None, v
+    return seq, ""
+
+def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemistry, custom_mode, custom_seq):
+    # Adapter validation
+    adapter_seq, adapter_msg = _resolve_adapter(adapter_choice, custom_adapter)
+    if adapter_seq is None:
+        return None, None, pd.DataFrame(), None, None, None, adapter_msg, "", ""  # adapter_status, primer_status, phasing_status
+
+    # Primer validation (primer can include degenerate bases; only enforce C/G run rules)
+    primer_msg = _cg_violation_html(primer)
+    if primer_msg:
+        return None, None, pd.DataFrame(), None, None, None, "", primer_msg, ""
+
+    # Custom phasing validation (only when On; A/C/T/G only is handled in run_tool, but add C/G run rules here)
+    phasing_msg = ""
+    if custom_mode == "On":
+        s = (custom_seq or "").upper().replace(" ", "")
+        # only enforce run rules if the characters are valid A/C/T/G (run_tool will also validate chars/length)
+        if set(s) <= {"A","C","T","G"}:
+            phasing_msg = _cg_violation_html(s)
+            if phasing_msg:
+                return None, None, pd.DataFrame(), None, None, None, "", "", phasing_msg
+
+    # Delegate to the existing runner
+    out = run_tool(phasing, primer, adapter_seq, chemistry, custom_mode, custom_seq)
+    # Append empty status placeholders (adapter_status, primer_status, phasing_status) if all good
+    if isinstance(out, tuple):
+        return (*out[:-1], "", "", out[-1])  # keep previous phasing/status_inline message in the last slot
+    return out
+
 # ---------- main function ----------
 def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
     phasing = int(phasing)
@@ -484,37 +614,37 @@ chemistries = [
     "One-channel (iSeq 100)",
 ]
 
-def _resolve_adapter(adapter_choice: str, custom_value: str):
-    """
-    Validate adapter input.
-    - If 'Other (user entry)' is selected, allow ONLY A/C/T/G (case-insensitive).
-    - Convert to UPPERCASE when passing through.
-    - On invalid input, return (None, <error_html>) so the UI shows an inline error.
-    """
-    if adapter_choice.startswith("Other"):
-        # remove all whitespace and uppercase
-        seq = ''.join((custom_value or "").split()).upper()
-        if not seq:
-            return None, "<div style='color:#b00020'>❌ Enter a custom adapter sequence.</div>"
-        invalid = sorted({ch for ch in seq if ch not in {"A", "C", "T", "G"}})
-        if invalid:
-            bad = ", ".join(invalid)
-            return None, (
-                f"<div style='color:#b00020'>❌ Invalid character(s) in custom adapter: {bad}. "
-                f"Use only A, C, T, G (case-insensitive).</div>"
-            )
-        return seq, ""
+# def _resolve_adapter(adapter_choice: str, custom_value: str):
+#     """
+#     Validate adapter input.
+#     - If 'Other (user entry)' is selected, allow ONLY A/C/T/G (case-insensitive).
+#     - Convert to UPPERCASE when passing through.
+#     - On invalid input, return (None, <error_html>) so the UI shows an inline error.
+#     """
+#     if adapter_choice.startswith("Other"):
+#         # remove all whitespace and uppercase
+#         seq = ''.join((custom_value or "").split()).upper()
+#         if not seq:
+#             return None, "<div style='color:#b00020'>❌ Enter a custom adapter sequence.</div>"
+#         invalid = sorted({ch for ch in seq if ch not in {"A", "C", "T", "G"}})
+#         if invalid:
+#             bad = ", ".join(invalid)
+#             return None, (
+#                 f"<div style='color:#b00020'>❌ Invalid character(s) in custom adapter: {bad}. "
+#                 f"Use only A, C, T, G (case-insensitive).</div>"
+#             )
+#         return seq, ""
+# 
+#     # preset: take everything before the first space as the adapter sequence
+#     seq = adapter_choice.split(" ")[0].strip().upper()
+#     return seq, ""
 
-    # preset: take everything before the first space as the adapter sequence
-    seq = adapter_choice.split(" ")[0].strip().upper()
-    return seq, ""
-
-def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemistry, custom_mode, custom_seq):
-    adapter_seq, msg = _resolve_adapter(adapter_choice, custom_adapter)
-    if adapter_seq is None:  # show error inline and clear outputs
-        return None, None, pd.DataFrame(), None, None, None, msg
-    # delegate to your existing run_tool (expects the raw adapter string)
-    return run_tool(phasing, primer, adapter_seq, chemistry, custom_mode, custom_seq)
+# def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemistry, custom_mode, custom_seq):
+#     adapter_seq, msg = _resolve_adapter(adapter_choice, custom_adapter)
+#     if adapter_seq is None:  # show error inline and clear outputs
+#         return None, None, pd.DataFrame(), None, None, None, msg
+#     # delegate to your existing run_tool (expects the raw adapter string)
+#     return run_tool(phasing, primer, adapter_seq, chemistry, custom_mode, custom_seq)
 
 with gr.Blocks(css="""
   /* Inputs panel (light mode) */
@@ -551,7 +681,10 @@ with gr.Blocks(css="""
     font-weight: 600; 
   }
   .downloads-row { gap: 12px; }
-
+               
+  /* Make adapter dropdown a bit wider, custom adapter narrower */
+  #adapter-dd { min-width: 400px; }         /* nudge wider; adjust as needed */
+  #adapter-custom { min-width: 370px; }     /* nudge wider; adjust as needed */
 """) as demo:
 
     demo.queue()
@@ -560,9 +693,7 @@ with gr.Blocks(css="""
         f"""
         <h2 style="margin-bottom:0.2em;">
             Phased PCR1 Amplicon Primer Designer
-            <span style="font-weight: normal; font-size: 0.8em;">
-            (version {VERSION})
-            </span>
+            <span style="font-weight: normal; font-size: 0.8em;">(version {VERSION})</span>
         </h2>
         <p style="font-size: 0.9em; margin-top: 0.5em;">
             Generate phased PCR primers with balanced early-cycle nucleotide diversity.
@@ -589,31 +720,65 @@ with gr.Blocks(css="""
                 ],
                 value="ACACTCTTTCCCTACACGACGCTCTTCCGATCT (TruSeq-P5 Forward)",
                 label="Adapter",
-                scale=1
+                scale=4          # ← CSS above
             )
             adapter_custom = gr.Textbox(
                 value="",
-                label="Custom adapter (enabled if 'Other')",
+                label="Custom adapter",
                 placeholder="Enter custom adapter sequence",
                 interactive=False,
-                scale=1
+                scale=3
             )
+            with gr.Column(scale=1):
+                adapter_status = gr.HTML("")    # inline adapter error
+
             primer_in  = gr.Textbox(
                 "CCTAHGGGRBGCAGCAG",
                 label="Gene-specific primer (5′→3′)",
                 placeholder="e.g. CCTAHGGGRBGCAGCAG",
-                scale=1
+                scale=3
             )
+            with gr.Column(scale=1):
+                primer_status = gr.HTML("")    # inline primer error
 
-        # Enable/disable custom adapter box based on dropdown
+        # Enable/disable custom adapter; clear status on change
         def _toggle_adapter(choice):
             if choice.startswith("Other"):
-                return gr.update(interactive=True)
+                return gr.update(interactive=True), gr.update(value="")
             else:
-                return gr.update(value="", interactive=False)
-        adapter_dd.change(_toggle_adapter, inputs=adapter_dd, outputs=adapter_custom)
+                return gr.update(value="", interactive=False), gr.update(value="")
+        adapter_dd.change(_toggle_adapter, inputs=adapter_dd, outputs=[adapter_custom, adapter_status])
 
-        # ROW 2: Sequencing chemistry + Radio + Custom phased-bases + inline status
+        # Live validate adapter custom entry
+        def _validate_adapter_live(val):
+            seq = ''.join((val or "").split()).upper()
+            # Accept only ACTG; then enforce C/G run rules
+            if not seq:
+                return ""
+            invalid = sorted({ch for ch in seq if ch not in {"A", "C", "T", "G"}})
+            if invalid:
+                bad = ", ".join(invalid)
+                return f"<div style='color:#b00020'>❌ Invalid character(s): {bad}. Use only A, C, T, G.</div>"
+            return _cg_violation_html(seq)
+        adapter_custom.change(_validate_adapter_live, inputs=adapter_custom, outputs=adapter_status)
+
+        # Live validate primer input 
+        def _validate_primer_live(val):
+            seq = ''.join((val or "").split()).upper()
+            if not seq:
+                return ""
+            allowed = set("ACGTRYMKSWHBVDN")  # IUPAC DNA codes
+            invalid = sorted({ch for ch in seq if ch not in allowed})
+            if invalid:
+                bad = ", ".join(invalid)
+                return (
+                    "<div style='color:#b00020'>❌ Invalid character(s): "
+                    f"{bad}. Use only IUPAC DNA codes: A C G T R Y M K S W H B V D N.</div>"
+                )
+            return _cg_violation_html(seq)  # still enforce literal CCCC and 5×C/G runs
+        primer_in.change(_validate_primer_live, inputs=primer_in, outputs=primer_status)
+
+        # Row 2: Chemistry + custom phasing + inline phasing status
         with gr.Row(elem_classes="inline-row"):
             chem_in = gr.Dropdown(
                 ["Four-channels (HiSeq & MiSeq)",
@@ -624,27 +789,21 @@ with gr.Blocks(css="""
                 label="Sequencing chemistry",
                 scale=1
             )
-
             custom_mode = gr.Radio(
-                choices=["Off", "On"],
-                value="Off",
+                choices=["Off", "On"], value="Off",
                 label="Enter your own phased primer",
-                scale=1,
-                elem_id="custom-mode"
+                scale=1, elem_id="custom-mode"
             )
-
             custom_seq = gr.Textbox(
                 value="",
-                label="Custom phasing bases (A/C/T/G only)",
+                label="Custom phasing bases",
                 placeholder="e.g. GTC",
                 interactive=False,
                 scale=1
             )
-
             with gr.Column(scale=1):
-                status_inline = gr.HTML("")  # error/success message
+                status_inline = gr.HTML("")  # phasing status / general status
 
-        # toggle handler: enable/disable + clear text & status when Off
         def _toggle(mode):
             if mode == "On":
                 return gr.update(interactive=True), gr.update(value="")
@@ -652,9 +811,21 @@ with gr.Blocks(css="""
                 return gr.update(value="", interactive=False), gr.update(value="")
         custom_mode.change(_toggle, inputs=custom_mode, outputs=[custom_seq, status_inline])
 
+        # Optional live validation for custom phasing bases
+        def _validate_custom_seq_live(val):
+            s = (val or "").upper().replace(" ", "")
+            if not s:
+                return ""
+            invalid = sorted({ch for ch in s if ch not in {"A","C","T","G"}})
+            if invalid:
+                bad = ", ".join(invalid)
+                return f"<div style='color:#b00020'>❌ Invalid character(s): {bad}. Use only A, C, T, G.</div>"
+            return _cg_violation_html(s)
+        custom_seq.change(_validate_custom_seq_live, inputs=custom_seq, outputs=status_inline)
+
         run_btn = gr.Button("Generate Phased Primers", variant="primary")
 
-    # outputs
+    # Outputs
     nuc_plot  = gr.Plot(label="Nucleotide Composition by Position")
     clr_plot  = gr.Plot(label="Color Channel Composition by Position")
     gr.Markdown("<hr style='opacity:.2;'>")
@@ -665,15 +836,11 @@ with gr.Blocks(css="""
         dl_clr = gr.DownloadButton(label="Download color_percentages_plot.png", variant="primary")
         dl_csv = gr.DownloadButton(label="Download primers.csv", variant="primary")
 
-    # file_nuc  = gr.File(label="Download nucleotide_percentages_plot.png")
-    # file_clr  = gr.File(label="Download color_percentages_plot.png")
-    # file_csv  = gr.File(label="Download primers.csv")
-
-    # use the wrapper that resolves the adapter to the bare sequence
+    # NOTE: now we output three status fields: adapter_status, primer_status, status_inline (phasing/general)
     run_btn.click(
         run_tool_with_adapter,
         inputs=[phasing_slider, primer_in, adapter_dd, adapter_custom, chem_in, custom_mode, custom_seq],
-        outputs=[nuc_plot, clr_plot, table_out, dl_nuc, dl_clr, dl_csv, status_inline]
+        outputs=[nuc_plot, clr_plot, table_out, dl_nuc, dl_clr, dl_csv, adapter_status, primer_status, status_inline]
     )
 
 if __name__ == "__main__":

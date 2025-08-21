@@ -102,4 +102,5 @@ Paul Munn, Genomics Innovation Hub, Cornell University
 * Version 1.1.0: Addition of color balancing plot
 * Version 1.2.0: Enable user to enter custom phased primers
 * Version 1.3.0: Modifications to phasing algorithm to make it chemistry-aware
+* Version 1.3.1: Added rules to prevent 4-in-a-row bases (e.g. CCCC) and 5-in-a-row C/G mix (e.g. no CGCGC or CCCGG)
 
