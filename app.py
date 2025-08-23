@@ -13,6 +13,7 @@ Version history:
     - 08/10/2025: Modified to enable user entered phased primers (1.2)
     - 08/18/2025: Modified so that algorithm to choose nucleotieds favors color balancing over nucleotide diversity (1.3)
     - 08/20/2025: Added rules to prevent 4-in-a-row bases (e.g. CCCC) and 5-in-a-row C/G mix (e.g. no CGCGC or CCCGG) (1.3.1)
+    - 08/22/2025: Added plot below nucleotide plot to show bases contributing to each bar (1.3.2)
 """
 
 import gradio as gr
@@ -23,7 +24,7 @@ import random, tempfile, os
 import string
 
 # ───────── global variables ─────────
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 # ────────────────────────────────────
 
 # Map degenerate bases
@@ -297,6 +298,120 @@ def plot_nuc(primer_list):
 
     # Floating counts for fractional contributions from degenerate bases
     counts = {n: np.zeros(L, dtype=float) for n in nucs}
+    for j in range(L):
+        col = mat[:, j]
+        for b in col:
+            if b in nucs:
+                counts[b][j] += 1.0
+            elif b in special:  # split among mapped bases
+                mapped = special[b]
+                frac = 1.0 / len(mapped)
+                for m in mapped:
+                    counts[m][j] += frac
+            else:
+                pass  # unknown character → ignore
+
+    # ── Figure with a second subplot showing raw nucleotides per primer under the bars ──
+    # ---- Dynamic sizing for the figure and subplots ----
+    TOP_IN         = 4.2               # inches reserved for the bar plot
+    PER_ROW_IN     = 0.3               # inches per primer row
+    BOTTOM_MIN_IN  = 1.2               # clamp min height of the bottom panel
+    BOTTOM_MAX_IN  = 8.0               # clamp max height of the bottom panel
+
+    bottom_in = float(np.clip(total * PER_ROW_IN, BOTTOM_MIN_IN, BOTTOM_MAX_IN))
+    fig = plt.figure(figsize=(10, TOP_IN + bottom_in))
+    gs = fig.add_gridspec(
+        nrows=2, ncols=1,
+        height_ratios=[TOP_IN, bottom_in],
+        hspace=0.32  # ↑ more space between top and bottom subplots (was ~0.25–0.30)
+    )
+    ax  = fig.add_subplot(gs[0])
+    ax2 = fig.add_subplot(gs[1], sharex=ax)
+
+    # ---- (your existing bar plotting code for ax) ----
+    x = np.arange(L)
+    nucs   = ["A", "C", "T", "G"]
+    colors = {"A": "green", "C": "blue", "T": "red", "G": "orange"}
+    group_width = 0.55
+    width = group_width / len(nucs)
+    offsets = (np.arange(len(nucs)) - (len(nucs)-1)/2) * width
+
+    for i, n in enumerate(nucs):
+        vals = (counts[n] / total) * 100.0
+        ax.bar(x + offsets[i], vals, width=width, label=n, color=colors[n])
+
+    ax.set(
+        xlabel="Base position from 5′ end (after phasing)",
+        ylabel="Nucleotide frequency (%)",
+        title="Nucleotide Composition by Position Across Phased Primers",
+        ylim=(0, 100),
+        xlim=(-0.5, L - 0.5),
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(i + 1) for i in range(L)])
+    ax.axhline(25, color="black", linestyle="--", linewidth=1)
+    ax.legend(title="Nucleotide", bbox_to_anchor=(1.02, 1), loc="upper left")
+
+    # ---- Bottom subplot: adaptive row spacing + font size ----
+    # Make spacing slightly tighter as rows grow, looser when few rows
+    row_spacing = float(np.interp(total, [5, 40], [1.80, 1.35]))  # ↑ larger at high totals
+    fontsize    = float(np.interp(total, [5, 40], [10.0, 7.8]))   # optional: tiny shrink with many rows
+
+    ax2.set_xlim(-0.5, L - 0.5)
+    ax2.set_ylim(row_spacing * (total - 1) + 0.5, -0.5)  # accommodate spacing
+    ax2.set_yticks([])
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([str(i + 1) for i in range(L)])
+    for spine in ["top", "right", "left"]:
+        ax2.spines[spine].set_visible(False)
+
+    # Draw letters (bold)
+    for j in range(L):
+        col = mat[:, j]
+        for r, base in enumerate(col):
+            c = colors.get(base, "#666666")
+            y = r * row_spacing
+            ax2.text(
+                j, y, base,
+                ha="center", va="center",
+                fontsize=fontsize,
+                fontweight="bold",
+                fontfamily="DejaVu Sans Mono",
+                color=c
+            )
+
+    ax2.set_xlabel("Base position (per-primer bases shown below each position)")
+    plt.subplots_adjust(left=0.075, right=0.87)
+    plt.tight_layout()
+    return fig
+
+def plot_nuc_old(primer_list):
+    # Use the shortest primer length so every position has data across all primers
+    if not primer_list:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.text(0.5, 0.5, "No primers to plot.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+    L = min(len(p) for p in primer_list)
+    if L == 0:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        ax.text(0.5, 0.5, "Primers have zero length.", ha="center", va="center")
+        ax.axis("off")
+        return fig
+
+    rows = [[ch.upper() for ch in p[:L]] for p in primer_list]
+    mat = np.array(rows)
+    total = mat.shape[0]
+
+    # Targets and colors
+    nucs   = ["A", "C", "T", "G"]
+    colors = {"A": "green", "C": "blue", "T": "red", "G": "orange"}
+
+    # Degenerate-to-standard translation
+    special = compile_library_of_special_nucs()
+
+    # Floating counts for fractional contributions from degenerate bases
+    counts = {n: np.zeros(L, dtype=float) for n in nucs}
 
     for j in range(L):
         col = mat[:, j]
@@ -331,6 +446,10 @@ def plot_nuc(primer_list):
     )
     ax.set_xticks(x)
     ax.set_xticklabels([str(i + 1) for i in range(L)])
+
+    # --- add a black dotted horizontal line at 25% ---
+    ax.axhline(25, color="black", linestyle="--", linewidth=1)
+
     ax.legend(title="Nucleotide", bbox_to_anchor=(1.02, 1), loc="upper left")
     plt.tight_layout()
     return fig
@@ -464,6 +583,10 @@ def plot_colors(primer_list, chemistry):
     )
     ax.set_xticks(x)
     ax.set_xticklabels([str(i + 1) for i in range(L)])
+
+    # --- add a black dotted horizontal line at 25% ---
+    ax.axhline(25, color="black", linestyle="--", linewidth=1)
+
     ax.legend(title="Nucleotides", bbox_to_anchor=(1.02, 1), loc="upper left")
     plt.tight_layout()
     return fig
@@ -655,6 +778,13 @@ with gr.Blocks(css="""
   }
   .inline-row { align-items:center; gap:12px; }
 
+  /* Header: title (left) and Cornell link (right) on the SAME TOP ROW, same <h2> size */
+  .header-bar { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:8px; }
+  .header-left  { margin:0; }
+  .header-right { margin:0; }              /* keep default <h2> size so it matches the left */
+  .header-right a { color:inherit; text-decoration:none; }
+  .header-right a:hover { text-decoration:underline; }
+
   /* Ticks that adapt to theme */
   .tick-grid {
     display:grid;
@@ -689,57 +819,70 @@ with gr.Blocks(css="""
 
     demo.queue()
 
-    gr.Markdown(
+    gr.HTML(
         f"""
-        <h2 style="margin-bottom:0.2em;">
+        <div class="header-bar">
+          <h2 class="header-left">
             Phased PCR1 Amplicon Primer Designer
             <span style="font-weight: normal; font-size: 0.8em;">(version {VERSION})</span>
-        </h2>
-        <p style="font-size: 0.9em; margin-top: 0.5em;">
-            Generate phased PCR primers with balanced early-cycle nucleotide diversity.
+          </h2>
+          <h2 class="header-right">
+            <a href="https://github.com/Cornell-Genomics-Facility" target="_blank" rel="noopener">
+              Cornell University, Genomics Facility
+            </a>
+          </h2>
+        </div>
+        <p style="font-size: 0.9em; margin:6px 0 0 0;">
+          Generate phased PCR primers with balanced early-cycle nucleotide diversity.
+          &nbsp;<strong>Read the docs:</strong>
+          <a href="https://github.com/Cornell-Genomics-Facility/phased_primers" target="_blank" rel="noopener">
+            github.com/Cornell-Genomics-Facility/phased_primers
+          </a>
         </p>
         """
     )
 
     with gr.Column(elem_classes="input-panel"):
-        # slider + tick grid
         phasing_slider = gr.Slider(minimum=0, maximum=21, value=0, step=1,
                                    label="Amount of primer phasing (integer)")
         ticks = ''.join(f'<span>{i}</span>' for i in range(22))
         gr.HTML(f"<div class='tick-grid'>{ticks}</div>")
 
-        # ROW 1: Adapter dropdown + Custom adapter textbox + Primer textbox
+        # ROW 1: adapter inputs (scale=3) + adapter error (scale=1)
         with gr.Row(elem_classes="inline-row"):
-            adapter_dd = gr.Dropdown(
-                choices=[
-                    "ACACTCTTTCCCTACACGACGCTCTTCCGATCT (TruSeq-P5 Forward)",
-                    "GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT (TruSeq-P7 Reverse)",
-                    "TCGTCGGCAGCGTCAGATGTGTATAAGAGACAG (Nextera-P5 Forward)",
-                    "GTCTCGTGGGCTCGGAGATGTGTATAAGAGACAG (Nextera-P7 Reverse)",
-                    "Other (user entry)",
-                ],
-                value="ACACTCTTTCCCTACACGACGCTCTTCCGATCT (TruSeq-P5 Forward)",
-                label="Adapter",
-                scale=4          # ← CSS above
-            )
-            adapter_custom = gr.Textbox(
-                value="",
-                label="Custom adapter",
-                placeholder="Enter custom adapter sequence",
-                interactive=False,
-                scale=3
-            )
+            with gr.Column(scale=3):
+                adapter_dd = gr.Dropdown(
+                    choices=[
+                        "ACACTCTTTCCCTACACGACGCTCTTCCGATCT (TruSeq-P5 Forward)",
+                        "GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT (TruSeq-P7 Reverse)",
+                        "TCGTCGGCAGCGTCAGATGTGTATAAGAGACAG (Nextera-P5 Forward)",
+                        "GTCTCGTGGGCTCGGAGATGTGTATAAGAGACAG (Nextera-P7 Reverse)",
+                        "Other (user entry)",
+                    ],
+                    value="ACACTCTTTCCCTACACGACGCTCTTCCGATCT (TruSeq-P5 Forward)",
+                    label="Adapter",
+                    elem_id="adapter-dd"
+                )
+                adapter_custom = gr.Textbox(
+                    value="",
+                    label="Custom adapter",
+                    placeholder="Select 'Other' to enter custom adapter sequence",
+                    interactive=False,
+                    elem_id="adapter-custom"
+                )
             with gr.Column(scale=1):
-                adapter_status = gr.HTML("")    # inline adapter error
+                adapter_status = gr.HTML("")
 
-            primer_in  = gr.Textbox(
-                "CCTAHGGGRBGCAGCAG",
-                label="Gene-specific primer (5′→3′)",
-                placeholder="e.g. CCTAHGGGRBGCAGCAG",
-                scale=3
-            )
+        # ROW 2: primer input (scale=3) + primer error (scale=1)
+        with gr.Row(elem_classes="inline-row"):
+            with gr.Column(scale=3):
+                primer_in  = gr.Textbox(
+                    "CCTAHGGGRBGCAGCAG",
+                    label="Gene-specific primer (5′→3′)",
+                    placeholder="Enter custom primer"
+                )
             with gr.Column(scale=1):
-                primer_status = gr.HTML("")    # inline primer error
+                primer_status = gr.HTML("")
 
         # Enable/disable custom adapter; clear status on change
         def _toggle_adapter(choice):
@@ -797,7 +940,7 @@ with gr.Blocks(css="""
             custom_seq = gr.Textbox(
                 value="",
                 label="Custom phasing bases",
-                placeholder="e.g. GTC",
+                placeholder="Click 'On' to enter custom phasing bases",
                 interactive=False,
                 scale=1
             )
