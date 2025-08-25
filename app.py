@@ -14,6 +14,7 @@ Version history:
     - 08/18/2025: Modified so that algorithm to choose nucleotieds favors color balancing over nucleotide diversity (1.3)
     - 08/20/2025: Added rules to prevent 4-in-a-row bases (e.g. CCCC) and 5-in-a-row C/G mix (e.g. no CGCGC or CCCGG) (1.3.1)
     - 08/22/2025: Added plot below nucleotide plot to show bases contributing to each bar (1.3.2)
+    - 08/25/2025: Bug fixes to enforce rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix (1.3.3)
 """
 
 import gradio as gr
@@ -24,7 +25,7 @@ import random, tempfile, os
 import string
 
 # ───────── global variables ─────────
-VERSION = "1.3.2"
+VERSION = "1.3.3"
 # ────────────────────────────────────
 
 # Map degenerate bases
@@ -88,6 +89,94 @@ def build_custom_phased_list(primer: str, custom_seq: str):
 # 4) Result: a list of staggered primers (with added nucleotides up front) that differ only by a few bases, 
 #    but introduce complexity early in the read.
 def phase_primer(primer, phasing, chemistry):
+    """
+    All chemistries enforce:
+      • No 4 identical bases in a row at the front.
+      • No 5-long run consisting only of C/G at the front.
+
+    Random base preferences when needed:
+      • Two-channels (original SBS): use A/C/T only for random picks (occasionally pick G at random).
+      • Two-channels (XLEAP-SBS)   : prefer C/T, allow A less often; occasionally pick G at random.
+      • Others (Four-channel, One-channel): uniform among legal candidates.
+    """
+    if phasing == 0:
+        return [list(primer)]
+
+    def violates_constraints(current_added, cand):
+        # No 4 identical bases in a row at the front
+        if len(current_added) >= 3 and all(x == cand for x in current_added[:3]):
+            return True
+        # No 5-long run consisting only of C/G at the front
+        if cand in {"C", "G"} and len(current_added) >= 4 and all(x in {"C", "G"} for x in current_added[:4]):
+            return True
+        return False
+
+    def pick_with_weights(pool, weights_map):
+        try:
+            w = [weights_map.get(b, 1.0) for b in pool]
+            if all(v <= 0 for v in w):
+                return random.choice(pool)
+            return random.choices(pool, weights=w, k=1)[0]
+        except Exception:
+            return random.choice(pool)
+
+    split = list(primer)
+    phased = [split.copy() for _ in range(phasing + 1)]
+    added = []
+    special = compile_library_of_special_nucs()
+
+    for phase_cnt in range(phasing, 0, -1):
+        subset = split[:phase_cnt]
+        combined = added + subset
+        counts = pd.Series(combined).value_counts()
+
+        all_nucs = ["A", "T", "C", "G"] + list(special.keys())
+        data = {n: counts.get(n, 0) for n in all_nucs}
+        df = adjust_special_nucleotides(pd.DataFrame([data]))  # columns A/T/C/G (floats)
+
+        # minimal count tie-set among A/T/C/G
+        # compute the tie set among bases with the current minimum count
+        two_channel = chemistry in {"Two-channels (original SBS)", "Two-channels (XLEAP-SBS)"}
+        cols_to_consider = ["A", "C", "T"] if two_channel else ["A", "C", "T", "G"]
+
+        df_min = df[cols_to_consider]
+        min_val = df_min.min(axis=1).iat[0]
+        choices = df_min.columns[df_min.iloc[0] == min_val].tolist()
+
+        # enforce constraints first
+        legal_choices = [b for b in choices if not violates_constraints(added, b)]
+
+        # prefer choices present in the current subset when possible
+        if legal_choices:
+            base_pool = [c for c in legal_choices if c in subset] or legal_choices
+        else:
+            all_legal = [b for b in ["A", "C", "T", "G"] if not violates_constraints(added, b)]
+            base_pool = [c for c in all_legal if c in subset] or all_legal or choices
+
+        # chemistry-specific random selection rules (on constrained pool)
+        # print('base pool: ', base_pool)
+        if len(base_pool) == 1:
+            chosen = base_pool[0]
+        elif chemistry == "Two-channels (original SBS)":
+            # occasionally pick G at random
+            weights = {"A": 1.0, "C": 1.0, "T": 1.0, "G": 0.5}  # G occasionally selected when random
+            chosen = pick_with_weights(base_pool, weights)
+        elif chemistry == "Two-channels (XLEAP-SBS)":
+            # Prefer C/T; A less often; occasionally pick G at random
+            weights = {"C": 1.0, "T": 1.0, "A": 0.5, "G": 0.5}  # G occasionally selected when random
+            chosen = pick_with_weights(base_pool, weights)
+        else:
+            # Four-channel & One-channel: uniform among constrained pool
+            chosen = random.choice(base_pool)
+
+        # prepend chosen base into all downstream phased primers
+        added = [chosen] + added
+        for i in range(phasing - phase_cnt + 1, phasing + 1):
+            phased[i] = [chosen] + phased[i]
+
+    return phased
+
+def phase_primer_old(primer, phasing, chemistry):
     """
     When a final random choice is needed among equally good bases:
       1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|
@@ -175,7 +264,7 @@ def phase_primer(primer, phasing, chemistry):
 
     return phased
 
-def phase_primer_old(primer, phasing, chemistry):
+def phase_primer_old_old(primer, phasing, chemistry):
     """
     Same algorithm as before, but when a final random choice is needed among equally good bases:
       1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|

@@ -104,4 +104,4 @@ Paul Munn, Genomics Innovation Hub, Cornell University
 * Version 1.3.0: Modifications to phasing algorithm to make it chemistry-aware
 * Version 1.3.1: Added rules to prevent 4-in-a-row bases (e.g. CCCC) and 5-in-a-row C/G mix (e.g. no CGCGC or CCCGG)
 * Version 1.3.2: Added plot below nucleotide plot to show bases contributing to each bar
-
+* Version 1.3.3: Bug fixes to enforce rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix
