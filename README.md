@@ -4,7 +4,7 @@ Generate **phased PCR primers** with balanced early–cycle nucleotide diversity
 
 [**▶ Launch the app on Hugging Face Spaces**](https://programmeratlarge-phased-primers.hf.space/) &nbsp;*(faster, more interactive, server version)*
 
-[**▶ Launch static version of the app on GitHub**](https://cornell-genomics-facility.github.io/phased_primers/) &nbsp;*(slower, less interactive, runs localy in your browser)*
+[**▶ Launch local version of the app from GitHub**](https://cornell-genomics-facility.github.io/phased_primers/) &nbsp;*(slower, less interactive, runs localy in your browser)*
 
 ---
 
