@@ -15,6 +15,7 @@ Version history:
     - 08/20/2025: Added rules to prevent 4-in-a-row bases (e.g. CCCC) and 5-in-a-row C/G mix (e.g. no CGCGC or CCCGG) (1.3.1)
     - 08/22/2025: Added plot below nucleotide plot to show bases contributing to each bar (1.3.2)
     - 08/25/2025: Bug fixes to enforce rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix (1.3.3)
+    - 08/27/2025: Updated rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix (1.3.4)
 """
 
 import gradio as gr
@@ -25,7 +26,7 @@ import random, tempfile, os
 import string
 
 # ───────── global variables ─────────
-VERSION = "1.3.3"
+VERSION = "1.3.4"
 # ────────────────────────────────────
 
 # Map degenerate bases
@@ -95,8 +96,8 @@ def phase_primer(primer, phasing, chemistry):
       • No 5-long run consisting only of C/G at the front.
 
     Random base preferences when needed:
-      • Two-channels (original SBS): use A/C/T only for random picks (occasionally pick G at random).
-      • Two-channels (XLEAP-SBS)   : prefer C/T, allow A less often; occasionally pick G at random.
+      • Two-channels (original SBS) (NextSeq500, NovaSeq6000): use A/C/T only for random picks (occasionally pick G at random).
+      • Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)   : prefer C/T, allow A less often; occasionally pick G at random.
       • Others (Four-channel, One-channel): uniform among legal candidates.
     """
     if phasing == 0:
@@ -136,7 +137,7 @@ def phase_primer(primer, phasing, chemistry):
 
         # minimal count tie-set among A/T/C/G
         # compute the tie set among bases with the current minimum count
-        two_channel = chemistry in {"Two-channels (original SBS)", "Two-channels (XLEAP-SBS)"}
+        two_channel = chemistry in {"Two-channels (original SBS) (NextSeq500, NovaSeq6000)", "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)"}
         cols_to_consider = ["A", "C", "T"] if two_channel else ["A", "C", "T", "G"]
 
         df_min = df[cols_to_consider]
@@ -157,11 +158,11 @@ def phase_primer(primer, phasing, chemistry):
         # print('base pool: ', base_pool)
         if len(base_pool) == 1:
             chosen = base_pool[0]
-        elif chemistry == "Two-channels (original SBS)":
+        elif chemistry == "Two-channels (original SBS) (NextSeq500, NovaSeq6000)":
             # occasionally pick G at random
             weights = {"A": 1.0, "C": 1.0, "T": 1.0, "G": 0.5}  # G occasionally selected when random
             chosen = pick_with_weights(base_pool, weights)
-        elif chemistry == "Two-channels (XLEAP-SBS)":
+        elif chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
             # Prefer C/T; A less often; occasionally pick G at random
             weights = {"C": 1.0, "T": 1.0, "A": 0.5, "G": 0.5}  # G occasionally selected when random
             chosen = pick_with_weights(base_pool, weights)
@@ -180,8 +181,8 @@ def phase_primer_old(primer, phasing, chemistry):
     """
     When a final random choice is needed among equally good bases:
       1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|
-      2) Two-channels (original SBS):   prefer A/C/T; occasionally pick G.
-      3) Two-channels (XLEAP-SBS):      prefer C/T; pick A less often; occasionally G.
+      2) Two-channels (original SBS) (NextSeq500, NovaSeq6000):   prefer A/C/T; occasionally pick G.
+      3) Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100):      prefer C/T; pick A less often; occasionally G.
         Additionally, forbid:
           • 'C' appearing 4 times in a row in the phasing prefix (no "CCCC")
           • any 5-long run consisting only of C/G (e.g., "CGCGC", "CCCGG", etc.)
@@ -240,12 +241,12 @@ def phase_primer_old(primer, phasing, chemistry):
         # Chemistry-specific tie-breaking
         if len(base_pool) == 1:
             chosen = base_pool[0]
-        elif chemistry == "Two-channels (original SBS)":
+        elif chemistry == "Two-channels (original SBS) (NextSeq500, NovaSeq6000)":
             # Prefer A/C/T, occasionally G
             weights = {"A": 1.0, "C": 1.0, "T": 1.0, "G": 0.05}
             chosen = pick_with_weights(base_pool, weights)
 
-        elif chemistry == "Two-channels (XLEAP-SBS)":
+        elif chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
             # Prefer C/T strongly; A less often; occasionally G
             weights = {"C": 1.0, "T": 1.0, "A": 0.3, "G": 0.05}
             # Enforce constraints by filtering illegal candidates first
@@ -268,8 +269,8 @@ def phase_primer_old_old(primer, phasing, chemistry):
     """
     Same algorithm as before, but when a final random choice is needed among equally good bases:
       1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|
-      2) Two-channels (original SBS):   prefer A/C/T
-      3) Two-channels (XLEAP-SBS):      prefer C/T
+      2) Two-channels (original SBS) (NextSeq500, NovaSeq6000):   prefer A/C/T
+      3) Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100):      prefer C/T
       4) One-channel (iSeq 100):        prefer A/C/T
     """
     if phasing == 0:
@@ -298,12 +299,12 @@ def phase_primer_old_old(primer, phasing, chemistry):
             best = [b for b, v in imbalances if v == min_val]
             return random.choice(best)
 
-        elif chem == "Two-channels (original SBS)":
+        elif chem == "Two-channels (original SBS) (NextSeq500, NovaSeq6000)":
             pref = {"A", "C", "T"}  # prefer signal channels; G is no-color
             preferred = [b for b in base_pool if b in pref]
             return random.choice(preferred if preferred else base_pool)
 
-        elif chem == "Two-channels (XLEAP-SBS)":
+        elif chem == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
             pref = {"C", "T"}       # C/T are colored; A is blue, G dark but spec asks C/T priority
             preferred = [b for b in base_pool if b in pref]
             return random.choice(preferred if preferred else base_pool)
@@ -546,8 +547,8 @@ def plot_nuc_old(primer_list):
 # def get_color_map(chem):
 #     maps = {
 #         "Four-channels (HiSeq & MiSeq)" : {"red":["A","C"], "green":["G","T"], "black":["H","R","B","S","W","D","N","K","Y","M","V"]},
-#         "Two-channels (original SBS)"   : {"orange":["A"], "red":["C"], "green":["T"], "none":["G"]},
-#         "Two-channels (XLEAP-SBS)"      : {"blue":["A"], "cyan":["C"], "green":["T"], "none":["G"]},
+#         "Two-channels (original SBS) (NextSeq500, NovaSeq6000)"   : {"orange":["A"], "red":["C"], "green":["T"], "none":["G"]},
+#         "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)"      : {"blue":["A"], "cyan":["C"], "green":["T"], "none":["G"]},
 #         "One-channel (iSeq 100)"        : {"green":["A"], "red":["C"], "orange":["T"], "none":["G"]},
 #     }
 #     return maps[chem]
@@ -564,14 +565,14 @@ def get_color_spec(chem):
             ("A / C", "red",   {"A", "C"}),
             ("G / T", "green", {"G", "T"}),
         ]
-    elif chem == "Two-channels (original SBS)":
+    elif chem == "Two-channels (original SBS) (NextSeq500, NovaSeq6000)":
         return [
             ("A", "orange",   {"A"}),
             ("C", "red",      {"C"}),
             ("T", "green",    {"T"}),
             ("G", "gray",     {"G"}),
         ]
-    elif chem == "Two-channels (XLEAP-SBS)":
+    elif chem == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
         return [
             ("A", "blue",     {"A"}),
             ("C", "cyan",     {"C"}),
@@ -625,14 +626,14 @@ def plot_colors(primer_list, chemistry):
 
     # Build plotting groups per chemistry
     groups = []
-    if chemistry == "Two-channels (XLEAP-SBS)":
+    if chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
         # C contributes to BOTH A and T channels; remove separate C bar
         groups = [
             ("A / C", "blue",  base_counts["A"] + base_counts["C"]),
             ("T / C", "green", base_counts["T"] + base_counts["C"]),
             ("G",     "gray",  base_counts["G"]),
         ]
-    elif chemistry == "Two-channels (original SBS)":
+    elif chemistry == "Two-channels (original SBS) (NextSeq500, NovaSeq6000)":
         # A contributes to BOTH C and T channels; remove separate A bar
         groups = [
             ("A / C", "red",   base_counts["A"] + base_counts["C"]),
@@ -761,16 +762,17 @@ def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemi
         return None, None, pd.DataFrame(), None, None, None, adapter_msg, "", ""  # adapter_status, primer_status, phasing_status
 
     # Primer validation (primer can include degenerate bases; only enforce C/G run rules)
-    primer_msg = _cg_violation_html(primer)
-    if primer_msg:
-        return None, None, pd.DataFrame(), None, None, None, "", primer_msg, ""
+    # Remove rule for 4-in-a-row and C/G mix
+    # primer_msg = _cg_violation_html(primer)
+    # if primer_msg:
+    #     return None, None, pd.DataFrame(), None, None, None, "", primer_msg, ""
 
     # Custom phasing validation (only when On; A/C/T/G only is handled in run_tool, but add C/G run rules here)
     phasing_msg = ""
     if custom_mode == "On":
         s = (custom_seq or "").upper().replace(" ", "")
         # only enforce run rules if the characters are valid A/C/T/G (run_tool will also validate chars/length)
-        if set(s) <= {"A","C","T","G"}:
+        if set(s) <= set("ACGTRYMKSWHBVDN"):  # IUPAC DNA codes
             phasing_msg = _cg_violation_html(s)
             if phasing_msg:
                 return None, None, pd.DataFrame(), None, None, None, "", "", phasing_msg
@@ -790,9 +792,10 @@ def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
 
     if custom_mode == "On":
         seq = (custom_seq or "").strip().upper().replace(" ", "")
-        invalid = sorted({ch for ch in seq if ch not in {"A","C","T","G"}})
+        allowed = set("ACGTRYMKSWHBVDN")  # IUPAC DNA codes
+        invalid = sorted({ch for ch in seq if ch not in allowed})
         if invalid:
-            status = f"❌ Invalid character(s): {', '.join(invalid)}. Use only A, C, T, G."
+            status = f"❌ Invalid character(s): {', '.join(invalid)}. Use only IUPAC DNA codes: A C G T R Y M K S W H B V D N."
             return None, None, pd.DataFrame(), None, None, None, _status_html(status)
         if len(seq) != phasing:
             status = f"❌ Length mismatch: entered {len(seq)} base(s) but slider is {phasing}."
@@ -821,8 +824,8 @@ def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
 # ---------- UI ----------
 chemistries = [
     "Four-channels (HiSeq & MiSeq)",
-    "Two-channels (original SBS)",
-    "Two-channels (XLEAP-SBS)",
+    "Two-channels (original SBS) (NextSeq500, NovaSeq6000)",
+    "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)",
     "One-channel (iSeq 100)",
 ]
 
@@ -1007,19 +1010,20 @@ with gr.Blocks(css="""
                     "<div style='color:#b00020'>❌ Invalid character(s): "
                     f"{bad}. Use only IUPAC DNA codes: A C G T R Y M K S W H B V D N.</div>"
                 )
-            return _cg_violation_html(seq)  # still enforce literal CCCC and 5×C/G runs
+            # return _cg_violation_html(seq)  # still enforce 4-in-a-row and 5×C/G runs
+            return ""  # No longer need to enforce 4-in-a-row and 5×C/G runs
         primer_in.change(_validate_primer_live, inputs=primer_in, outputs=primer_status)
 
         # Row 2: Chemistry + custom phasing + inline phasing status
         with gr.Row(elem_classes="inline-row"):
             chem_in = gr.Dropdown(
                 ["Four-channels (HiSeq & MiSeq)",
-                 "Two-channels (original SBS)",
-                 "Two-channels (XLEAP-SBS)",
+                 "Two-channels (original SBS) (NextSeq500, NovaSeq6000)",
+                 "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)",
                  "One-channel (iSeq 100)"],
                 value="Four-channels (HiSeq & MiSeq)",
                 label="Sequencing chemistry",
-                scale=1
+                scale=3
             )
             custom_mode = gr.Radio(
                 choices=["Off", "On"], value="Off",
@@ -1031,9 +1035,9 @@ with gr.Blocks(css="""
                 label="Custom phasing bases",
                 placeholder="Click 'On' to enter custom phasing bases",
                 interactive=False,
-                scale=1
+                scale=2
             )
-            with gr.Column(scale=1):
+            with gr.Column(scale=2):
                 status_inline = gr.HTML("")  # phasing status / general status
 
         def _toggle(mode):
@@ -1045,14 +1049,18 @@ with gr.Blocks(css="""
 
         # Optional live validation for custom phasing bases
         def _validate_custom_seq_live(val):
-            s = (val or "").upper().replace(" ", "")
-            if not s:
+            seq = (val or "").upper().replace(" ", "")
+            if not seq:
                 return ""
-            invalid = sorted({ch for ch in s if ch not in {"A","C","T","G"}})
+            allowed = set("ACGTRYMKSWHBVDN")  # IUPAC DNA codes
+            invalid = sorted({ch for ch in seq if ch not in allowed})
             if invalid:
                 bad = ", ".join(invalid)
-                return f"<div style='color:#b00020'>❌ Invalid character(s): {bad}. Use only A, C, T, G.</div>"
-            return _cg_violation_html(s)
+                return (
+                    "<div style='color:#b00020'>❌ Invalid character(s): "
+                    f"{bad}. Use only IUPAC DNA codes: A C G T R Y M K S W H B V D N.</div>"
+                )
+            return _cg_violation_html(seq)
         custom_seq.change(_validate_custom_seq_live, inputs=custom_seq, outputs=status_inline)
 
         run_btn = gr.Button("Generate Phased Primers", variant="primary")
