@@ -94,7 +94,7 @@ Original concept & R/Shiny implementation:
 Franziska Bonath – https://github.com/FranBonath
 
 Python/Gradio port & enhancements:
-Paul Munn, Genomics Innovation Hub, Cornell University
+Genomics Innovation Hub, Cornell University
 
 ---
 

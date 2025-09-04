@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Phased PCR1 Amplicon Primer Designer"
+authors:
+  - name: "Cornell Genomics Facility"
+abstract: >
+  Generates phased PCR primers with balanced nucleotide complexity to improve
+  early-cycle diversity for Illumina sequencing; includes utilities for
+  primer design and visualization.
+keywords:
+  - genomics
+  - primers
+  - sequencing
+  - Illumina
+  - phasing
+  - software
+repository-code: "https://github.com/Cornell-Genomics-Facility/phased_primers"
+
+# Replace these two fields when you cut a release:
+version: "v1.3.4"
+date-released: "2025-09-04"
+
+preferred-citation:
+  type: software
+  title: "Phased PCR1 Amplicon Primer Designer"
+  authors:
+    - name: "Cornell Genomics Facility"
+  year: 2025
+  version: "vX.Y.Z"
+  url: "https://github.com/Cornell-Genomics-Facility/phased_primers"
