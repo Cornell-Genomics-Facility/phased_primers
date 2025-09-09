@@ -361,7 +361,16 @@ def design_primers(phased, adapter, raw):
         )
     return pd.DataFrame(rows)
 
-def plot_nuc(primer_list):
+def get_threshold(chemistry: str) -> int:
+    mapping = {
+        "Four-channels (HiSeq & MiSeq)": 25,
+        "Two-channels (original SBS) (NextSeq500, NovaSeq6000)": 25,
+        "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)": 30,
+        "One-channel (iSeq 100)": 25,
+    }
+    return mapping.get(chemistry, 25)
+
+def plot_nuc(primer_list, chemistry):
     # Use the shortest primer length so every position has data across all primers
     if not primer_list:
         fig, ax = plt.subplots(figsize=(10, 3))
@@ -439,8 +448,10 @@ def plot_nuc(primer_list):
     )
     ax.set_xticks(x)
     ax.set_xticklabels([str(i + 1) for i in range(L)])
-    ax.axhline(25, color="black", linestyle="--", linewidth=1)
     ax.legend(title="Nucleotide", bbox_to_anchor=(1.02, 1), loc="upper left")
+
+    threshold = get_threshold(chemistry)
+    ax.axhline(threshold, color="black", linestyle="--", linewidth=1)
 
     # ---- Bottom subplot: adaptive row spacing + font size ----
     # Make spacing slightly tighter as rows grow, looser when few rows
@@ -674,8 +685,9 @@ def plot_colors(primer_list, chemistry):
     ax.set_xticks(x)
     ax.set_xticklabels([str(i + 1) for i in range(L)])
 
-    # --- add a black dotted horizontal line at 25% ---
-    ax.axhline(25, color="black", linestyle="--", linewidth=1)
+    # --- add a black dotted horizontal line at threshold ---
+    threshold = get_threshold(chemistry)
+    ax.axhline(threshold, color="black", linestyle="--", linewidth=1)
 
     ax.legend(title="Nucleotides", bbox_to_anchor=(1.02, 1), loc="upper left")
     plt.tight_layout()
@@ -808,7 +820,7 @@ def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
         status = f"✅ Using algorithmic phasing (phasing = {phasing}). Generated {len(primers)} primers."
 
     df        = design_primers(primers, adapter, primer)
-    fig_nuc   = plot_nuc(primers)
+    fig_nuc   = plot_nuc(primers, chemistry)
     fig_color = plot_colors(primers, chemistry)
 
     return (

@@ -16,6 +16,8 @@ Generate **phased PCR primers** with balanced early–cycle nucleotide diversity
 | Color over-representation (e.g. all “A”), especially in amplicon sequencing | Multiple phased primers are pooled so sequencer sees a balanced signal |
 | Four-, two- and one-channel chemistries need different base/fluor balancing | App shows per-chemistry **color plots** to verify balance |
 
+For an in-depth guide to amplicon libraries using phased primers, see the tech note by [Franzika Bonath](https://github.com/FranBonath): [Tech Note: Increased Complexity of Amplicon Libraries using Phased Primers](https://ngisweden.scilifelab.se/2021/01/tech-note-increase-complexity-of-amplicon-libraries-using-phased-primers/).
+
 ---
 
 ## App Features
@@ -70,11 +72,19 @@ pip install -r requirements.txt
 ## Quick Start
 
 1. Open the app: <https://programmeratlarge-phased-primers.hf.space/>
-2. **Set phasing amount** (0 – 21).
+2. **Set phasing amount** (0 – 21. See "**How many phased primers?**" below).
 3. Paste your **gene-specific primer** and **adapter**.
 4. Choose sequencing **chemistry**.
 5. Click **Generate Primers**.
 6. Review the two plots ➜ download PNG + CSV files.
+
+**How many phased primers?** Increase the phasing amount until, in the **Color channel by position** plot, every cycle’s required signal(s) sits **above the dashed threshold** across **all positions**.
+*The dashed threshold is a general guideline, not a strict pass/fail — optimal levels can vary with instrument, library complexity, and base composition. The threshold value itself differs by chemistry (and is set accordingly in the app).*
+
+* **XLEAP-SBS:** only the **green** channel must exceed the dashed threshold.
+* **Original SBS:** both **red** and **green** channels must exceed the dashed threshold.
+* **Four-channel:** both **red** and **green** channels must exceed the dashed threshold.
+* **One-channel (iSeq 100):** the combined **A+C+T** signal must exceed the dashed threshold.
 
 ---
 
