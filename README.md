@@ -2,7 +2,7 @@
 
 Generate **phased PCR primers** with balanced early–cycle nucleotide diversity — an approach that minimizes base-calling noise and phasing/pre-phasing artifacts on Illumina instruments.  
 
-[**▶ Launch server version of the app from Hugging Face Spaces**](https://huggingface.co/spaces/Cornell-Genomics-Facility/phased_primers/) &nbsp;*(faster, more interactive, server version)*
+[**▶ Launch server version of the app from Hugging Face Spaces**](https://cornell-genomics-facility-phased-primers.hf.space) &nbsp;*(faster, more interactive, server version)*
 
 [**▶ Launch local version of the app from GitHub**](https://cornell-genomics-facility.github.io/phased_primers/) &nbsp;*(slower, less interactive, runs localy in your browser)*
 
