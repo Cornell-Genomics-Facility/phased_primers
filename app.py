@@ -26,7 +26,7 @@ import random, tempfile, os
 import string
 
 # ───────── global variables ─────────
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 # ────────────────────────────────────
 
 # Map degenerate bases

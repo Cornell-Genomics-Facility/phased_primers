@@ -17,7 +17,7 @@ keywords:
 repository-code: "https://github.com/Cornell-Genomics-Facility/phased_primers"
 
 # Replace these two fields when you cut a release:
-version: "v1.3.4"
+version: "v1.3.5"
 date-released: "2025-09-04"
 
 preferred-citation:
@@ -26,5 +26,5 @@ preferred-citation:
   authors:
     - name: "Cornell Genomics Facility"
   year: 2025
-  version: "vX.Y.Z"
+  version: "v1.3.5"
   url: "https://github.com/Cornell-Genomics-Facility/phased_primers"
