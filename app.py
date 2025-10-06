@@ -943,6 +943,10 @@ with gr.Blocks(css="""
             github.com/Cornell-Genomics-Facility/phased_primers
           </a>
         </p>
+        <p style="font-size: 0.9em; margin:6px 0 0 0;">
+          <strong>After designing phased primers:</strong> confirm primer design by checking each primer for self-complementarity (especially 3′) </br>
+          that can lead to self-dimers, hairpins, and cross-dimerization with other primers involving the new phased nucleotides
+        </p>
         """
     )
 

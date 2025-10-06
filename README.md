@@ -6,6 +6,8 @@ Generate **phased PCR primers** with balanced early–cycle nucleotide diversity
 
 [**▶ Launch local version of the app from GitHub**](https://cornell-genomics-facility.github.io/phased_primers/) &nbsp;*(slower, less interactive, runs localy in your browser)*
 
+**After designing phased primers:** confirm primer design by checking each primer for self-complementarity (especially 3′) that can lead to self-dimers, hairpins, and cross-dimerization with other primers involving the new phased nucleotides.
+
 ---
 
 ## Why Phased Primers?
