@@ -16,6 +16,8 @@ Version history:
     - 08/22/2025: Added plot below nucleotide plot to show bases contributing to each bar (1.3.2)
     - 08/25/2025: Bug fixes to enforce rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix (1.3.3)
     - 08/27/2025: Updated rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix (1.3.4)
+    - 10/25/2025: Added chemistry-aware threshold to plots (1.3.5)
+    - 02/25/2026: Added MiSeq i100 XLEAP-SBS chemistry (1.3.6)
 """
 
 import gradio as gr
@@ -26,7 +28,7 @@ import random, tempfile, os
 import string
 
 # ───────── global variables ─────────
-VERSION = "1.3.5"
+VERSION = "1.3.6"
 # ────────────────────────────────────
 
 # Map degenerate bases
@@ -97,7 +99,8 @@ def phase_primer(primer, phasing, chemistry):
 
     Random base preferences when needed:
       • Two-channels (original SBS) (NextSeq500, NovaSeq6000): use A/C/T only for random picks (occasionally pick G at random).
-      • Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)   : prefer C/T, allow A less often; occasionally pick G at random.
+      • Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)   : prefer C/T, allow A less often; occasionally pick G at random.
+      • Two-channels (XLEAP-SBS) (MiSeq i100)   : prefer A/T, allow C less often; occasionally pick G at random.
       • Others (Four-channel, One-channel): uniform among legal candidates.
     """
     if phasing == 0:
@@ -137,7 +140,7 @@ def phase_primer(primer, phasing, chemistry):
 
         # minimal count tie-set among A/T/C/G
         # compute the tie set among bases with the current minimum count
-        two_channel = chemistry in {"Two-channels (original SBS) (NextSeq500, NovaSeq6000)", "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)"}
+        two_channel = chemistry in {"Two-channels (original SBS) (NextSeq500, NovaSeq6000)", "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)", "Two-channels (XLEAP-SBS) (MiSeq i100)"}
         cols_to_consider = ["A", "C", "T"] if two_channel else ["A", "C", "T", "G"]
 
         df_min = df[cols_to_consider]
@@ -162,9 +165,13 @@ def phase_primer(primer, phasing, chemistry):
             # occasionally pick G at random
             weights = {"A": 1.0, "C": 1.0, "T": 1.0, "G": 0.5}  # G occasionally selected when random
             chosen = pick_with_weights(base_pool, weights)
-        elif chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
+        elif chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)":
             # Prefer C/T; A less often; occasionally pick G at random
             weights = {"C": 1.0, "T": 1.0, "A": 0.5, "G": 0.5}  # G occasionally selected when random
+            chosen = pick_with_weights(base_pool, weights)
+        elif chemistry == "Two-channels (XLEAP-SBS) (MiSeq i100)":
+            # Prefer A/T; C less often; occasionally pick G at random
+            weights = {"C": 0.5, "T": 1.0, "A": 1.0, "G": 0.5}  # G occasionally selected when random
             chosen = pick_with_weights(base_pool, weights)
         else:
             # Four-channel & One-channel: uniform among constrained pool
@@ -182,11 +189,12 @@ def phase_primer_old(primer, phasing, chemistry):
     When a final random choice is needed among equally good bases:
       1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|
       2) Two-channels (original SBS) (NextSeq500, NovaSeq6000):   prefer A/C/T; occasionally pick G.
-      3) Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100):      prefer C/T; pick A less often; occasionally G.
+      3) Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX):        prefer C/T; pick A less often; occasionally G.
+      4) Two-channels (XLEAP-SBS) (MiSeq i100):                   prefer A/T; pick C less often; occasionally G.
         Additionally, forbid:
           • 'C' appearing 4 times in a row in the phasing prefix (no "CCCC")
           • any 5-long run consisting only of C/G (e.g., "CGCGC", "CCCGG", etc.)
-      4) One-channel (iSeq 100):        prefer A/C/T
+      5) One-channel (iSeq 100):        prefer A/C/T
     """
     if phasing == 0:
         return [list(primer)]
@@ -246,9 +254,17 @@ def phase_primer_old(primer, phasing, chemistry):
             weights = {"A": 1.0, "C": 1.0, "T": 1.0, "G": 0.05}
             chosen = pick_with_weights(base_pool, weights)
 
-        elif chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
+        elif chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)":
             # Prefer C/T strongly; A less often; occasionally G
             weights = {"C": 1.0, "T": 1.0, "A": 0.3, "G": 0.05}
+            # Enforce constraints by filtering illegal candidates first
+            legal_pool = [b for b in base_pool if not violates_xleap_constraints(added, b)]
+            pool = legal_pool if legal_pool else base_pool  # fallback if all illegal
+            chosen = pick_with_weights(pool, weights)
+
+        elif chemistry == "Two-channels (XLEAP-SBS) (MiSeq i100)":
+            # Prefer C/T strongly; A less often; occasionally G
+            weights = {"C": 0.5, "T": 1.0, "A": 1.0, "G": 0.05}
             # Enforce constraints by filtering illegal candidates first
             legal_pool = [b for b in base_pool if not violates_xleap_constraints(added, b)]
             pool = legal_pool if legal_pool else base_pool  # fallback if all illegal
@@ -259,86 +275,6 @@ def phase_primer_old(primer, phasing, chemistry):
             chosen = random.choice(base_pool)
 
         # Record and prepend into phased copies (same as original)
-        added = [chosen] + added
-        for i in range(phasing - phase_cnt + 1, phasing + 1):
-            phased[i] = [chosen] + phased[i]
-
-    return phased
-
-def phase_primer_old_old(primer, phasing, chemistry):
-    """
-    Same algorithm as before, but when a final random choice is needed among equally good bases:
-      1) Four-channels (HiSeq & MiSeq): prefer the base that minimizes |(A+C) - (G+T)|
-      2) Two-channels (original SBS) (NextSeq500, NovaSeq6000):   prefer A/C/T
-      3) Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100):      prefer C/T
-      4) One-channel (iSeq 100):        prefer A/C/T
-    """
-    if phasing == 0:
-        return [list(primer)]
-
-    def prioritized_choice(cands, subset, counts_series, chem):
-        # First keep the existing behavior: prefer candidates present in the current subset
-        sub_cands = [c for c in cands if c in subset]
-        base_pool = sub_cands if sub_cands else cands
-
-        if chem == "Four-channels (HiSeq & MiSeq)":
-            # Choose the candidate that best balances A+C vs G+T if added now
-            A = float(counts_series.get("A", 0.0))
-            C = float(counts_series.get("C", 0.0))
-            G = float(counts_series.get("G", 0.0))
-            T = float(counts_series.get("T", 0.0))
-            def imbalance(b):
-                A2, C2, G2, T2 = A, C, G, T
-                if b == "A": A2 += 1.0
-                elif b == "C": C2 += 1.0
-                elif b == "G": G2 += 1.0
-                elif b == "T": T2 += 1.0
-                return abs((A2 + C2) - (G2 + T2))
-            imbalances = [(b, imbalance(b)) for b in base_pool]
-            min_val = min(v for _, v in imbalances)
-            best = [b for b, v in imbalances if v == min_val]
-            return random.choice(best)
-
-        elif chem == "Two-channels (original SBS) (NextSeq500, NovaSeq6000)":
-            pref = {"A", "C", "T"}  # prefer signal channels; G is no-color
-            preferred = [b for b in base_pool if b in pref]
-            return random.choice(preferred if preferred else base_pool)
-
-        elif chem == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
-            pref = {"C", "T"}       # C/T are colored; A is blue, G dark but spec asks C/T priority
-            preferred = [b for b in base_pool if b in pref]
-            return random.choice(preferred if preferred else base_pool)
-
-        elif chem == "One-channel (iSeq 100)":
-            pref = {"A", "C", "T"}  # signal vs G (dark)
-            preferred = [b for b in base_pool if b in pref]
-            return random.choice(preferred if preferred else base_pool)
-
-        # Fallback (unknown chemistry)
-        return random.choice(base_pool)
-
-    split = list(primer)
-    phased = [split.copy() for _ in range(phasing + 1)]
-    added = []
-    special = compile_library_of_special_nucs()
-
-    for phase_cnt in range(phasing, 0, -1):
-        subset = split[:phase_cnt]
-        combined = added + subset
-        counts = pd.Series(combined).value_counts()
-        all_nucs = ["A", "T", "C", "G"] + list(special.keys())
-        data = {n: counts.get(n, 0) for n in all_nucs}
-        df = adjust_special_nucleotides(pd.DataFrame([data]))  # → columns A/T/C/G with fractional adds
-        # choose among least represented standard bases
-        min_val = df.min(axis=1).values[0]
-        choices = df.columns[df.iloc[0] == min_val].tolist()   # subset of {"A","T","C","G"}
-
-        # If multiple candidates remain, use chemistry-aware priority instead of pure random
-        if len(choices) == 1:
-            chosen = choices[0]
-        else:
-            chosen = prioritized_choice(choices, subset, df.iloc[0], chemistry)
-
         added = [chosen] + added
         for i in range(phasing - phase_cnt + 1, phasing + 1):
             phased[i] = [chosen] + phased[i]
@@ -365,7 +301,8 @@ def get_threshold(chemistry: str) -> int:
     mapping = {
         "Four-channels (HiSeq & MiSeq)": 25,
         "Two-channels (original SBS) (NextSeq500, NovaSeq6000)": 25,
-        "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)": 30,
+        "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)": 30,
+        "Two-channels (XLEAP-SBS) (MiSeq i100)": 30,
         "One-channel (iSeq 100)": 25,
     }
     return mapping.get(chemistry, 25)
@@ -559,7 +496,8 @@ def plot_nuc_old(primer_list):
 #     maps = {
 #         "Four-channels (HiSeq & MiSeq)" : {"red":["A","C"], "green":["G","T"], "black":["H","R","B","S","W","D","N","K","Y","M","V"]},
 #         "Two-channels (original SBS) (NextSeq500, NovaSeq6000)"   : {"orange":["A"], "red":["C"], "green":["T"], "none":["G"]},
-#         "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)"      : {"blue":["A"], "cyan":["C"], "green":["T"], "none":["G"]},
+#         "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)"      : {"blue":["A"], "cyan":["C"], "green":["T"], "none":["G"]},
+#         "Two-channels (XLEAP-SBS) (MiSeq i100)"      : {"blue":["C"], "cyan":["A"], "green":["T"], "none":["G"]},
 #         "One-channel (iSeq 100)"        : {"green":["A"], "red":["C"], "orange":["T"], "none":["G"]},
 #     }
 #     return maps[chem]
@@ -583,10 +521,17 @@ def get_color_spec(chem):
             ("T", "green",    {"T"}),
             ("G", "gray",     {"G"}),
         ]
-    elif chem == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
+    elif chem == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)":
         return [
             ("A", "blue",     {"A"}),
             ("C", "cyan",     {"C"}),
+            ("T", "green",    {"T"}),
+            ("G", "gray",     {"G"}),
+        ]
+    elif chem == "Two-channels (XLEAP-SBS) (MiSeq i100)":
+        return [
+            ("A", "cyan",     {"A"}),
+            ("C", "blue",     {"C"}),
             ("T", "green",    {"T"}),
             ("G", "gray",     {"G"}),
         ]
@@ -637,11 +582,18 @@ def plot_colors(primer_list, chemistry):
 
     # Build plotting groups per chemistry
     groups = []
-    if chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)":
+    if chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)":
         # C contributes to BOTH A and T channels; remove separate C bar
         groups = [
             ("A / C", "blue",  base_counts["A"] + base_counts["C"]),
             ("T / C", "green", base_counts["T"] + base_counts["C"]),
+            ("G",     "gray",  base_counts["G"]),
+        ]
+    elif chemistry == "Two-channels (XLEAP-SBS) (MiSeq i100)":
+        # A contributes to BOTH C and T channels; remove separate A bar
+        groups = [
+            ("A / C", "blue",  base_counts["A"] + base_counts["C"]),
+            ("T / A", "green", base_counts["T"] + base_counts["A"]),
             ("G",     "gray",  base_counts["G"]),
         ]
     elif chemistry == "Two-channels (original SBS) (NextSeq500, NovaSeq6000)":
@@ -837,7 +789,8 @@ def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
 chemistries = [
     "Four-channels (HiSeq & MiSeq)",
     "Two-channels (original SBS) (NextSeq500, NovaSeq6000)",
-    "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)",
+    "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)",
+    "Two-channels (XLEAP-SBS) (MiSeq i100)",
     "One-channel (iSeq 100)",
 ]
 
@@ -1035,7 +988,8 @@ with gr.Blocks(css="""
             chem_in = gr.Dropdown(
                 ["Four-channels (HiSeq & MiSeq)",
                  "Two-channels (original SBS) (NextSeq500, NovaSeq6000)",
-                 "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX, MiSeq i100)",
+                 "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)",
+                 "Two-channels (XLEAP-SBS) (MiSeq i100)",
                  "One-channel (iSeq 100)"],
                 value="Four-channels (HiSeq & MiSeq)",
                 label="Sequencing chemistry",

@@ -43,6 +43,7 @@ Illumina currently ships **four distinct sequencing-by-synthesis (SBS) chemistri
 | **Four-channel** | HiSeq, MiSeq | Red laser detects **A/C**, green laser detects **G/T** | Each cycle must contain **≥1 red** **and** **≥1 green** signal |
 | **Two-channel (original SBS)** | NovaSeq 6000 (S1–S4 flow cells), NextSeq 550, MiniSeq | **A/C = red**, **A/T = green**, **G = no color** | Each cycle must show **any color signal** (red/green) |
 | **Two-channel (XLEAP-SBS)** | NovaSeq X/X-Plus | **A/C = blue**, **T/C = green**, **G = no color** | Require “≥1 green pixel” rule; **indices starting with GG are incompatible** |
+| **Two-channel (XLEAP-SBS)** | MiSeq i100 | **A/C = blue**, **T/A = green**, **G = no color** | Require “≥1 green pixel” rule; **indices starting with GG are incompatible** |
 | **One-channel** | iSeq 100 | Fluor mixing encoded in image intensity, not color | No color check; require **≥1 A or C or T** per cycle |
 
 > ℹ️  Always consult the latest Illumina documentation when designing index or primer pools for a specific platform.
@@ -121,3 +122,4 @@ Genomics Innovation Hub, Cornell University
 * Version 1.3.3: Bug fixes to enforce rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix
 * Version 1.3.4: Updated rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix
 * Version 1.3.5: Added chemistry-aware threshold to plots
+* Version 1.3.6: Added XLEAP-SBS MiSeq i100 chemistry
