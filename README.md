@@ -74,7 +74,7 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-1. Open the app: <https://programmeratlarge-phased-primers.hf.space/>
+1. Open the app: <https://cornell-genomics-facility-phased-primers.hf.space/>
 2. **Set phasing amount** (0 – 21. See "**How many phased primers?**" below).
 3. Paste your **gene-specific primer** and **adapter**.
 4. Choose sequencing **chemistry**.
