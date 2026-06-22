@@ -123,3 +123,4 @@ Genomics Innovation Hub, Cornell University
 * Version 1.3.4: Updated rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix
 * Version 1.3.5: Added chemistry-aware threshold to plots
 * Version 1.3.6: Added XLEAP-SBS MiSeq i100 chemistry
+* Version 1.4.0: Added "Multiple primers" custom-phasing mode (one phasing-bases textbox per primer)

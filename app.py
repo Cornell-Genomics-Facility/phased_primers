@@ -18,6 +18,7 @@ Version history:
     - 08/27/2025: Updated rules to prevent 4-in-a-row bases and 5-in-a-row C/G mix (1.3.4)
     - 10/25/2025: Added chemistry-aware threshold to plots (1.3.5)
     - 02/25/2026: Added MiSeq i100 XLEAP-SBS chemistry (1.3.6)
+    - 06/16/2026: Added "Multiple primers" custom-phasing mode (one phasing-bases textbox per primer) (1.4.0)
 """
 
 import gradio as gr
@@ -28,7 +29,7 @@ import random, tempfile, os
 import string
 
 # ───────── global variables ─────────
-VERSION = "1.3.6"
+VERSION = "1.4.0"
 # ────────────────────────────────────
 
 # Map degenerate bases
@@ -683,6 +684,25 @@ def build_custom_phased_list(primer: str, custom_seq: str):
     # ["", s[-1:], s[-2:], ..., s[-L:]]
     return [list(s[L-k:] + primer) for k in range(0, L+1)]
 
+def build_multi_phased_list(primer: str, seqs):
+    """One primer per entry in `seqs` (each already-cleaned phasing-base string)."""
+    cleaned = [(s or "").strip().upper().replace(" ", "") for s in seqs]
+    return [list(s + primer) for s in cleaned]
+
+def _multi_seq_violation_html(seq: str, idx: int) -> str:
+    """Validate a single multi-primer textbox: A/C/T/G only, 0-21 chars, no CG-run violations."""
+    s = (seq or "").strip().upper().replace(" ", "")
+    if len(s) > 21:
+        return f"<div style='color:#b00020'>❌ Primer {idx} phasing bases: max 21 characters (entered {len(s)}).</div>"
+    invalid = sorted({ch for ch in s if ch not in {"A", "C", "T", "G"}})
+    if invalid:
+        bad = ", ".join(invalid)
+        return f"<div style='color:#b00020'>❌ Primer {idx} phasing bases: invalid character(s) {bad}. Use only A, C, T, G.</div>"
+    cg = _cg_violation_html(s)
+    if cg:
+        return cg.replace("<div style='color:#b00020'>❌ ", f"<div style='color:#b00020'>❌ Primer {idx}: ")
+    return ""
+
 def _cg_violation_html(seq: str) -> str:
     """Return an HTML error if 'CCCC' or any 5-long C/G-only run exists; else empty string."""
     s = (seq or "").upper()
@@ -719,7 +739,7 @@ def _resolve_adapter(adapter_choice: str, custom_value: str):
         return None, v
     return seq, ""
 
-def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemistry, custom_mode, custom_seq):
+def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemistry, custom_mode, custom_seq, *multi_seqs):
     # Adapter validation
     adapter_seq, adapter_msg = _resolve_adapter(adapter_choice, custom_adapter)
     if adapter_seq is None:
@@ -731,9 +751,9 @@ def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemi
     # if primer_msg:
     #     return None, None, pd.DataFrame(), None, None, None, "", primer_msg, ""
 
-    # Custom phasing validation (only when On; A/C/T/G only is handled in run_tool, but add C/G run rules here)
+    # Custom phasing validation (only when Single primer; A/C/T/G only is handled in run_tool, but add C/G run rules here)
     phasing_msg = ""
-    if custom_mode == "On":
+    if custom_mode == "Single primer":
         s = (custom_seq or "").upper().replace(" ", "")
         # only enforce run rules if the characters are valid A/C/T/G (run_tool will also validate chars/length)
         if set(s) <= set("ACGTRYMKSWHBVDN"):  # IUPAC DNA codes
@@ -742,19 +762,81 @@ def run_tool_with_adapter(phasing, primer, adapter_choice, custom_adapter, chemi
                 return None, None, pd.DataFrame(), None, None, None, "", "", phasing_msg
 
     # Delegate to the existing runner
-    out = run_tool(phasing, primer, adapter_seq, chemistry, custom_mode, custom_seq)
+    out = run_tool(phasing, primer, adapter_seq, chemistry, custom_mode, custom_seq, *multi_seqs)
     # Append empty status placeholders (adapter_status, primer_status, phasing_status) if all good
     if isinstance(out, tuple):
         return (*out[:-1], "", "", out[-1])  # keep previous phasing/status_inline message in the last slot
     return out
 
+def check_color_threshold_warning(primer_list, chemistry):
+    """Return amber warning HTML if any non-G color bar falls below threshold at any position."""
+    if not primer_list:
+        return ""
+    L = min(len(p) for p in primer_list)
+    if L == 0:
+        return ""
+
+    rows = [[ch.upper() for ch in p[:L]] for p in primer_list]
+    mat = np.array(rows)
+    total = mat.shape[0]
+
+    special = compile_library_of_special_nucs()
+    bases = ["A", "C", "G", "T"]
+    base_counts = {b: np.zeros(L, dtype=float) for b in bases}
+    for j in range(L):
+        for b in mat[:, j]:
+            if b in base_counts:
+                base_counts[b][j] += 1.0
+            elif b in special:
+                frac = 1.0 / len(special[b])
+                for m in special[b]:
+                    if m in base_counts:
+                        base_counts[m][j] += frac
+
+    if chemistry == "Two-channels (XLEAP-SBS) (NextSeq2000, NovaSeqX)":
+        groups = [
+            ("A / C", base_counts["A"] + base_counts["C"]),
+            ("T / C", base_counts["T"] + base_counts["C"]),
+            ("G",     base_counts["G"]),
+        ]
+    elif chemistry == "Two-channels (XLEAP-SBS) (MiSeq i100)":
+        groups = [
+            ("A / C", base_counts["A"] + base_counts["C"]),
+            ("T / A", base_counts["T"] + base_counts["A"]),
+            ("G",     base_counts["G"]),
+        ]
+    elif chemistry == "Two-channels (original SBS) (NextSeq500, NovaSeq6000)":
+        groups = [
+            ("A / C", base_counts["A"] + base_counts["C"]),
+            ("A / T", base_counts["A"] + base_counts["T"]),
+            ("G",     base_counts["G"]),
+        ]
+    else:
+        groups = []
+        for lab, _, bset in get_color_spec(chemistry):
+            arr = np.zeros(L, dtype=float)
+            for b in bset:
+                arr += base_counts[b]
+            groups.append((lab, arr))
+
+    threshold = get_threshold(chemistry)
+    failing = [lab for lab, arr in groups if lab != "G" and np.any((arr / total) * 100.0 < threshold)]
+    if not failing:
+        return ""
+    channels = ", ".join(failing)
+    return (
+        f"<div style='color:#b07000;font-size:0.9em;margin-top:4px;'>"
+        f"⚠️ Color balance warning: channel(s) {channels} fall below the {threshold}% threshold "
+        f"at one or more positions. Review the Color Channel Composition plot.</div>"
+    )
+
 # ---------- main function ----------
-def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
+def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq, *multi_seqs):
     phasing = int(phasing)
     status = ""
     primer = primer.upper()
 
-    if custom_mode == "On":
+    if custom_mode == "Single primer":
         seq = (custom_seq or "").strip().upper().replace(" ", "")
         allowed = set("ACGTRYMKSWHBVDN")  # IUPAC DNA codes
         invalid = sorted({ch for ch in seq if ch not in allowed})
@@ -767,6 +849,20 @@ def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
 
         primers = build_custom_phased_list(primer, seq)
         status = f"✅ Using custom phased bases “{seq}”. Generated {len(primers)} primers."
+    elif custom_mode == "Multiple primers":
+        n = phasing
+        if n == 0:
+            status = "❌ Set the phasing slider above 0 to enter multiple custom primers."
+            return None, None, pd.DataFrame(), None, None, None, _status_html(status)
+
+        seqs = list(multi_seqs[:n])
+        for i, raw in enumerate(seqs, start=1):
+            msg = _multi_seq_violation_html(raw, i)
+            if msg:
+                return None, None, pd.DataFrame(), None, None, None, msg
+
+        primers = build_multi_phased_list(primer, seqs)
+        status = f"✅ Using {n} custom phased primers. Generated {len(primers)} primers."
     else:
         primers = phase_primer(primer, phasing, chemistry)
         status = f"✅ Using algorithmic phasing (phasing = {phasing}). Generated {len(primers)} primers."
@@ -775,6 +871,7 @@ def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
     fig_nuc   = plot_nuc(primers, chemistry)
     fig_color = plot_colors(primers, chemistry)
 
+    color_warn = check_color_threshold_warning(primers, chemistry)
     return (
         fig_nuc,
         fig_color,
@@ -782,7 +879,7 @@ def run_tool(phasing, primer, adapter, chemistry, custom_mode, custom_seq):
         save_fig_fixed(fig_nuc,   "nucleotide_percentages_plot.png"),
         save_fig_fixed(fig_color, "color_percentages_plot.png"),
         save_csv_fixed(df,        "phased_primers.csv"),
-        _status_html(status),
+        _status_html(status) + color_warn,
     )
 
 # ---------- UI ----------
@@ -859,7 +956,7 @@ with gr.Blocks(css="""
   @media (prefers-color-scheme: light) { .tick-grid { color: #444; } }
 
   /* give the radio extra width */
-  #custom-mode { min-width: 160px; }
+  #custom-mode { min-width: 220px; }
                
   /* Download buttons styling */
   .downloads-row .gr-button { 
@@ -996,26 +1093,56 @@ with gr.Blocks(css="""
                 scale=3
             )
             custom_mode = gr.Radio(
-                choices=["Off", "On"], value="Off",
+                choices=["Off", "Single primer", "Multiple primers"], value="Off",
                 label="Enter your own phased primer",
                 scale=1, elem_id="custom-mode"
             )
             custom_seq = gr.Textbox(
                 value="",
                 label="Custom phasing bases",
-                placeholder="Click 'On' to enter custom phasing bases",
+                placeholder="Select 'Single primer' to enter custom phasing bases",
                 interactive=False,
                 scale=2
             )
             with gr.Column(scale=2):
                 status_inline = gr.HTML("")  # phasing status / general status
 
-        def _toggle(mode):
-            if mode == "On":
-                return gr.update(interactive=True), gr.update(value="")
+        # Up to 21 textboxes for "Multiple primers" mode, one per phasing-slider position.
+        # Visibility of each is controlled by the slider value and the radio mode.
+        with gr.Column():
+            multi_seq_boxes = [
+                gr.Textbox(
+                    value="",
+                    label=f"Primer {i+1} phasing bases",
+                    placeholder="A/C/T/G only, 0-21 characters",
+                    visible=False,
+                )
+                for i in range(21)
+            ]
+
+        def _toggle(mode, n):
+            n = int(n)
+            if mode == "Single primer":
+                seq_update = gr.update(interactive=True)
+                box_updates = [gr.update(visible=False) for _ in range(21)]
+            elif mode == "Multiple primers":
+                seq_update = gr.update(value="", interactive=False)
+                box_updates = [gr.update(visible=(i < n)) for i in range(21)]
             else:
-                return gr.update(value="", interactive=False), gr.update(value="")
-        custom_mode.change(_toggle, inputs=custom_mode, outputs=[custom_seq, status_inline])
+                seq_update = gr.update(value="", interactive=False)
+                box_updates = [gr.update(visible=False) for _ in range(21)]
+            return [seq_update, gr.update(value="")] + box_updates
+        custom_mode.change(_toggle, inputs=[custom_mode, phasing_slider],
+                            outputs=[custom_seq, status_inline] + multi_seq_boxes)
+
+        # Keep the visible multi-primer box count in sync as the slider changes
+        def _update_multi_box_visibility(n, mode):
+            if mode != "Multiple primers":
+                return [gr.update() for _ in range(21)]
+            n = int(n)
+            return [gr.update(visible=(i < n)) for i in range(21)]
+        phasing_slider.change(_update_multi_box_visibility, inputs=[phasing_slider, custom_mode],
+                               outputs=multi_seq_boxes)
 
         # Optional live validation for custom phasing bases
         def _validate_custom_seq_live(val):
@@ -1033,6 +1160,23 @@ with gr.Blocks(css="""
             return _cg_violation_html(seq)
         custom_seq.change(_validate_custom_seq_live, inputs=custom_seq, outputs=status_inline)
 
+        # Live validation across the multi-primer boxes
+        def _validate_multi_boxes_live(mode, n, *vals):
+            if mode != "Multiple primers":
+                return ""
+            n = int(n)
+            if n == 0:
+                return "<div style='color:#b00020'>❌ Set the phasing slider above 0 to enter multiple custom primers.</div>"
+            for i in range(n):
+                msg = _multi_seq_violation_html(vals[i], i + 1)
+                if msg:
+                    return msg
+            return ""
+        for tb in multi_seq_boxes:
+            tb.change(_validate_multi_boxes_live,
+                       inputs=[custom_mode, phasing_slider] + multi_seq_boxes,
+                       outputs=status_inline)
+
         run_btn = gr.Button("Generate Phased Primers", variant="primary")
 
     # Outputs
@@ -1049,7 +1193,7 @@ with gr.Blocks(css="""
     # NOTE: now we output three status fields: adapter_status, primer_status, status_inline (phasing/general)
     run_btn.click(
         run_tool_with_adapter,
-        inputs=[phasing_slider, primer_in, adapter_dd, adapter_custom, chem_in, custom_mode, custom_seq],
+        inputs=[phasing_slider, primer_in, adapter_dd, adapter_custom, chem_in, custom_mode, custom_seq] + multi_seq_boxes,
         outputs=[nuc_plot, clr_plot, table_out, dl_nuc, dl_clr, dl_csv, adapter_status, primer_status, status_inline]
     )
 
